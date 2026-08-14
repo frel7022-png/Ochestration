@@ -35,8 +35,9 @@ SECTOR_HISTORY_FILE = HERE / "sector_history.csv"
 CODE_CACHE_FILE = HERE / "stock_code_cache.csv"
 SECTOR_CACHE_FILE = HERE / "stock_sector_cache.csv"
 
-HOLD_COLUMNS = ["종목명", "종목코드", "섹터", "수량", "평단가", "현재가", "등락률", "업데이트시각"]
-TX_COLUMNS = ["id", "날짜", "종목명", "구분", "수량", "단가", "실현손익", "메모", "정산반영"]
+HOLD_COLUMNS = ["종목명", "종목코드", "섹터", "수량", "평단가", "현재가", "등락률", "업데이트시각",
+                "통화", "매입금액KRW"]
+TX_COLUMNS = ["id", "날짜", "종목명", "구분", "수량", "단가", "통화", "환율", "실현손익", "메모", "정산반영"]
 
 DAILY_IMPORT_TAG = "일일매매일지"  # 이 메모가 붙은 거래는 같은 날짜 재반영 시 교체 대상
 
@@ -137,11 +138,12 @@ def load_holdings() -> pd.DataFrame:
         df = pd.read_csv(HOLDINGS_FILE, dtype={"종목코드": str}, keep_default_na=False, na_values=[""])
         for col in HOLD_COLUMNS:
             if col not in df.columns:
-                df[col] = "" if col in ("종목명", "종목코드", "섹터", "업데이트시각") else 0.0
-        for col in ("수량", "평단가", "현재가", "등락률"):
+                df[col] = "" if col in ("종목명", "종목코드", "섹터", "업데이트시각", "통화") else 0.0
+        for col in ("수량", "평단가", "현재가", "등락률", "매입금액KRW"):
             df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
         for col in ("종목명", "종목코드", "섹터", "업데이트시각"):
             df[col] = df[col].apply(clean_str)
+        df["통화"] = df["통화"].apply(clean_str).replace("", "원")
 
         # holdings에 빠진 종목코드/섹터는 영구 캐시에서 보충 (rebuild 직후 등)
         code_cache = load_code_cache()
@@ -166,7 +168,9 @@ def load_transactions() -> pd.DataFrame:
         df = pd.read_csv(TX_FILE, dtype={"id": str}, keep_default_na=False, na_values=[""])
         for col in TX_COLUMNS:
             if col not in df.columns:
-                df[col] = ""
+                df[col] = "원" if col == "통화" else ("1" if col == "환율" else "")
+        df["통화"] = df["통화"].replace("", "원")
+        df["환율"] = pd.to_numeric(df["환율"], errors="coerce").fillna(1.0)
         return df[TX_COLUMNS]
     return pd.DataFrame(columns=TX_COLUMNS)
 
@@ -181,16 +185,18 @@ def load_state() -> dict:
         return {
             "cash": float(df.loc[0, "예수금"]),
             "initial": float(df.loc[0, "최초자본"]),
-            "fee_rate": float(df.loc[0, "수수료율"]) if "수수료율" in df.columns else 0.0,
+            "fee_rate_krw": float(df.loc[0, "수수료율_원화"]) if "수수료율_원화" in df.columns else 0.0,
+            "fee_rate_usd": float(df.loc[0, "수수료율_달러"]) if "수수료율_달러" in df.columns else 0.0,
         }
-    return {"cash": 10_000_000.0, "initial": 10_000_000.0, "fee_rate": 0.0}
+    return {"cash": 10_000_000.0, "initial": 10_000_000.0, "fee_rate_krw": 0.0, "fee_rate_usd": 0.0}
 
 
 def save_state(state: dict) -> None:
     pd.DataFrame([{
         "예수금": state["cash"],
         "최초자본": state["initial"],
-        "수수료율": state.get("fee_rate", 0.0),
+        "수수료율_원화": state.get("fee_rate_krw", 0.0),
+        "수수료율_달러": state.get("fee_rate_usd", 0.0),
     }]).to_csv(STATE_FILE, index=False)
 
 
@@ -337,13 +343,65 @@ def fetch_index_quotes() -> dict:
     return result
 
 
+def fetch_fx_rate() -> float | None:
+    """원/달러(USD/KRW) 실시간 환율 조회."""
+    url = "https://m.stock.naver.com/front-api/marketIndex/prices"
+    params = {"category": "exchange", "reutersCode": "FX_USDKRW"}
+    headers = {"User-Agent": "Mozilla/5.0"}
+    try:
+        r = requests.get(url, params=params, headers=headers, timeout=6)
+        r.raise_for_status()
+        payload = r.json()
+        price = payload["result"][0]["closePrice"]
+        return float(str(price).replace(",", ""))
+    except Exception:
+        return None
+
+
+def fetch_worldstock_quotes(symbols: list[str]) -> dict:
+    """해외주식(예: 레드와이어 "RDW") 실시간 시세. 반환: {심볼: {"price","change_pct"}}."""
+    symbols = [s for s in symbols if s]
+    if not symbols:
+        return {}
+    url = f"https://polling.finance.naver.com/api/realtime/worldstock/stock/{','.join(symbols)}"
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"}
+    result = {}
+    try:
+        resp = requests.get(url, headers=headers, timeout=6)
+        resp.raise_for_status()
+        payload = resp.json()
+    except Exception:
+        return result
+    for d in payload.get("datas") or []:
+        code = str(d.get("symbolCode") or d.get("reutersCode") or "").strip()
+        price_raw = d.get("closePrice")
+        chg_raw = d.get("fluctuationsRatio")
+        if not code or price_raw is None:
+            continue
+        try:
+            price = float(str(price_raw).replace(",", ""))
+        except ValueError:
+            continue
+        try:
+            change_pct = float(str(chg_raw).replace(",", "").replace("%", "")) if chg_raw is not None else 0.0
+        except ValueError:
+            change_pct = 0.0
+        result[code] = {"price": price, "change_pct": change_pct}
+    return result
+
+
 def refresh_all_prices(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
-    """보유종목 시세를 전부 새로고침. 반환값: (갱신된 df, 진단 리포트 dict)."""
+    """보유종목 시세를 전부 새로고침 (국내는 네이버 국내 API, 통화가 USD인 종목은 해외주식 API).
+    반환값: (갱신된 df, 진단 리포트 dict)."""
     df = df.copy()
+    if "통화" not in df.columns:
+        df["통화"] = "원"
+    is_usd = df["통화"] == "USD"
+
     code_cache = load_code_cache()
     unresolved = []
     newly_resolved = {}
-    for i, row in df.iterrows():
+    for i, row in df[~is_usd].iterrows():
         code = clean_str(row.get("종목코드", ""))
         if not code or code.lower() == "nan":
             found = resolve_code(row["종목명"], code_cache)
@@ -355,17 +413,21 @@ def refresh_all_prices(df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     if newly_resolved:
         update_code_cache(newly_resolved)
 
-    codes = [clean_str(c) for c in df["종목코드"].tolist()]
-    codes = [c for c in codes if c and c.lower() != "nan"]
-    quotes, quote_errors = fetch_quotes(codes)
+    domestic_codes = [clean_str(c) for c in df.loc[~is_usd, "종목코드"].tolist()]
+    domestic_codes = [c for c in domestic_codes if c and c.lower() != "nan"]
+    quotes, quote_errors = fetch_quotes(domestic_codes)
+
+    usd_symbols = [clean_str(c) for c in df.loc[is_usd, "종목코드"].tolist()]
+    usd_quotes = fetch_worldstock_quotes(usd_symbols)
 
     now = now_kst_str()
     updated, failed = 0, []
     for i, row in df.iterrows():
         code = clean_str(row.get("종목코드", ""))
-        if code and code in quotes:
-            df.loc[i, "현재가"] = quotes[code]["price"]
-            df.loc[i, "등락률"] = quotes[code]["change_pct"]
+        src = usd_quotes if row.get("통화") == "USD" else quotes
+        if code and code in src:
+            df.loc[i, "현재가"] = src[code]["price"]
+            df.loc[i, "등락률"] = src[code]["change_pct"]
             df.loc[i, "업데이트시각"] = now
             updated += 1
         elif code:
@@ -417,14 +479,24 @@ def get_closed_out_last_sells(holdings_df: pd.DataFrame, tx_df: pd.DataFrame) ->
 # ------------------------------------------------------------------ #
 # 지표 계산
 # ------------------------------------------------------------------ #
-def compute_metrics(df: pd.DataFrame, cash: float):
+def compute_metrics(df: pd.DataFrame, cash: float, fx_rate: float = 1.0):
+    """fx_rate: 통화가 USD인 종목의 평가금액을 원화로 환산할 때 쓰는 현재 원/달러 환율.
+    매입금액은 각 매수 시점 환율로 이미 원화 환산되어 누적된 매입금액KRW를 그대로 쓴다
+    (그래야 가격 변동분과 환율 변동분이 합쳐진 정확한 원화 손익이 나옴)."""
     df = df.copy()
     for col in ("수량", "평단가", "현재가", "등락률"):
         df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0)
     df["섹터"] = df["섹터"].replace("", "미분류").fillna("미분류")
+    if "통화" not in df.columns:
+        df["통화"] = "원"
+    df["통화"] = df["통화"].replace("", "원").fillna("원")
+    if "매입금액KRW" not in df.columns:
+        df["매입금액KRW"] = 0.0
+    df["매입금액KRW"] = pd.to_numeric(df["매입금액KRW"], errors="coerce").fillna(0)
 
-    df["평가금액"] = df["수량"] * df["현재가"]
-    df["매입금액"] = df["수량"] * df["평단가"]
+    row_fx = df["통화"].map(lambda c: fx_rate if c == "USD" else 1.0)
+    df["평가금액"] = df["수량"] * df["현재가"] * row_fx
+    df["매입금액"] = df["매입금액KRW"].where(df["매입금액KRW"] > 0, df["수량"] * df["평단가"])
     df["손익"] = df["평가금액"] - df["매입금액"]
     df["손익률"] = df.apply(lambda r: (r["손익"] / r["매입금액"] * 100) if r["매입금액"] else 0, axis=1)
 
@@ -454,26 +526,29 @@ def compute_sector_weights(df: pd.DataFrame) -> dict:
 # ------------------------------------------------------------------ #
 def apply_transaction(holdings: pd.DataFrame, state: dict, name: str, kind: str, qty: float, price: float,
                        code_cache: dict | None = None, sector_cache: dict | None = None,
-                       fee_rate: float = 0.0):
-    """fee_rate: 매수/매도 대금 대비 수수료+세금 추정 비율 (예: 0.000579 = 0.0579%).
-    매수/매도 구분 없이 거래대금에 균일하게 적용하는 근사치 — 실제로는 매도 쪽에
-    거래세가 더 붙어서 비대칭이지만, 그걸 나눠볼 데이터가 없어 우선 평균값으로 적용."""
+                       fee_rate: float = 0.0, currency: str = "원", fx_rate: float = 1.0):
+    """fee_rate: 거래대금(원화 환산) 대비 수수료+세금 추정 비율.
+    currency/fx_rate: "USD" 종목은 price가 현지통화(달러) 기준이고, fx_rate로 원화 환산해서
+    예수금(원화)에 반영한다. 평단가/현재가는 항상 종목의 원래 통화로 저장하고(달러는 달러로
+    표시), 원화 환산 매입원가만 "매입금액KRW"에 누적해서 손익 계산에 쓴다."""
     holdings = holdings.copy()
     realized = None
     match = holdings.index[holdings["종목명"] == name]
-    fee = qty * price * fee_rate
+    amount_krw = qty * price * fx_rate
+    fee = amount_krw * fee_rate
 
     if kind == "매수":
-        cost = qty * price
-        state["cash"] -= (cost + fee)
+        state["cash"] -= (amount_krw + fee)
         if len(match):
             i = match[0]
             old_qty = float(holdings.loc[i, "수량"])
             old_avg = float(holdings.loc[i, "평단가"])
+            old_cost_krw = float(holdings.loc[i, "매입금액KRW"])
             new_qty = old_qty + qty
-            new_avg = (old_qty * old_avg + cost) / new_qty if new_qty else 0
+            new_avg = (old_qty * old_avg + qty * price) / new_qty if new_qty else 0
             holdings.loc[i, "수량"] = new_qty
             holdings.loc[i, "평단가"] = new_avg
+            holdings.loc[i, "매입금액KRW"] = old_cost_krw + amount_krw
             if not holdings.loc[i, "현재가"] or float(holdings.loc[i, "현재가"]) == 0:
                 holdings.loc[i, "현재가"] = price
         else:
@@ -484,36 +559,40 @@ def apply_transaction(holdings: pd.DataFrame, state: dict, name: str, kind: str,
                 "섹터": (sector_cache or {}).get(name, "미분류"),
                 "수량": qty, "평단가": price, "현재가": price,
                 "등락률": 0, "업데이트시각": now_kst_str(),
+                "통화": currency, "매입금액KRW": amount_krw,
             })
             holdings = pd.concat([holdings, pd.DataFrame([new_row])], ignore_index=True)
     else:  # 매도
-        proceeds = qty * price
-        state["cash"] += (proceeds - fee)
+        state["cash"] += (amount_krw - fee)
         if len(match):
             i = match[0]
             old_qty = float(holdings.loc[i, "수량"])
-            old_avg = float(holdings.loc[i, "평단가"])
-            realized = (price - old_avg) * qty
+            old_cost_krw = float(holdings.loc[i, "매입금액KRW"])
+            cost_krw_per_share = old_cost_krw / old_qty if old_qty else 0
+            realized = amount_krw - cost_krw_per_share * qty  # 원화 기준(가격+환차 합산) 실현손익
             new_qty = old_qty - qty
             if new_qty <= 0:
                 holdings = holdings.drop(index=i).reset_index(drop=True)
             else:
                 holdings.loc[i, "수량"] = new_qty
+                holdings.loc[i, "매입금액KRW"] = cost_krw_per_share * new_qty
         else:
             realized = 0.0
 
     return holdings, state, realized
 
 
-def rebuild_portfolio_from_transactions(tx: pd.DataFrame, initial_capital: float, fee_rate: float = 0.0):
+def rebuild_portfolio_from_transactions(tx: pd.DataFrame, initial_capital: float,
+                                         fee_rate_krw: float = 0.0, fee_rate_usd: float = 0.0):
     """transactions.csv 전체를 날짜순(같은 날짜 내에서는 원래 입력 순서대로) 처음부터
     재생하여 holdings/state/실현손익을 다시 계산.
     holdings는 이 함수(및 apply_transaction)를 통해서만 파생되는 결과물로 취급하고,
     절대 손으로 고치지 않는다 — 다음 재계산 때 덮어써지기 때문.
-    fee_rate는 거래대금 대비 수수료+세금 추정 비율 — 매 거래마다 적용되며,
-    state["fee_rate"]에 담겨 반환되어 이후에도 계속 같은 비율로 재사용된다."""
+    fee_rate_krw/usd는 거래대금(원화 환산) 대비 수수료+세금 추정 비율 — 국내/해외 거래에
+    각각 다르게 적용되며, state에 담겨 반환되어 이후에도 계속 같은 비율로 재사용된다."""
     holdings = pd.DataFrame(columns=HOLD_COLUMNS)
-    state = {"cash": initial_capital, "initial": initial_capital, "fee_rate": fee_rate}
+    state = {"cash": initial_capital, "initial": initial_capital,
+             "fee_rate_krw": fee_rate_krw, "fee_rate_usd": fee_rate_usd}
 
     if tx.empty:
         return holdings, state, tx
@@ -531,8 +610,11 @@ def rebuild_portfolio_from_transactions(tx: pd.DataFrame, initial_capital: float
         kind = row["구분"]
         qty = float(row["수량"])
         price = float(row["단가"])
+        currency = row.get("통화") or "원"
+        fx_rate = float(row.get("환율") or 1.0) if currency == "USD" else 1.0
+        rate = fee_rate_usd if currency == "USD" else fee_rate_krw
         holdings, state, realized = apply_transaction(holdings, state, name, kind, qty, price,
-                                                        code_cache, sector_cache, fee_rate)
+                                                        code_cache, sector_cache, rate, currency, fx_rate)
         if kind == "매도":
             realized_map[row["id"]] = realized if realized is not None else 0.0
 
