@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 todaytrans/
+nasdaqtrans/
 files/
 portfolio.csv
 portfolionasdaq.csv
