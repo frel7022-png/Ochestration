@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+todaytrans/
+files/
+portfolio.csv
+portfolionasdaq.csv
+.streamlit/secrets.toml

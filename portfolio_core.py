@@ -686,14 +686,14 @@ def import_daily_trades(parsed: pd.DataFrame, tx: pd.DataFrame, trade_date: str)
         if r["매수수량"] > 0 and r["매수평균가"] > 0:
             new_rows.append({
                 "id": str(uuid.uuid4())[:8], "날짜": trade_date, "종목명": name, "구분": "매수",
-                "수량": r["매수수량"], "단가": r["매수평균가"], "실현손익": "",
-                "메모": DAILY_IMPORT_TAG, "정산반영": True,
+                "수량": r["매수수량"], "단가": r["매수평균가"], "통화": "원", "환율": 1.0,
+                "실현손익": "", "메모": DAILY_IMPORT_TAG, "정산반영": True,
             })
         if r["매도수량"] > 0 and r["매도평균가"] > 0:
             new_rows.append({
                 "id": str(uuid.uuid4())[:8], "날짜": trade_date, "종목명": name, "구분": "매도",
-                "수량": r["매도수량"], "단가": r["매도평균가"], "실현손익": "",
-                "메모": DAILY_IMPORT_TAG, "정산반영": True,
+                "수량": r["매도수량"], "단가": r["매도평균가"], "통화": "원", "환율": 1.0,
+                "실현손익": "", "메모": DAILY_IMPORT_TAG, "정산반영": True,
             })
     if new_rows:
         tx = pd.concat([tx, pd.DataFrame(new_rows)], ignore_index=True)
