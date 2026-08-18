@@ -583,13 +583,20 @@ def apply_transaction(holdings: pd.DataFrame, state: dict, name: str, kind: str,
 
 
 def rebuild_portfolio_from_transactions(tx: pd.DataFrame, initial_capital: float,
-                                         fee_rate_krw: float = 0.0, fee_rate_usd: float = 0.0):
+                                         fee_rate_krw: float = 0.0, fee_rate_usd: float = 0.0,
+                                         prior_holdings: pd.DataFrame | None = None):
     """transactions.csv 전체를 날짜순(같은 날짜 내에서는 원래 입력 순서대로) 처음부터
     재생하여 holdings/state/실현손익을 다시 계산.
     holdings는 이 함수(및 apply_transaction)를 통해서만 파생되는 결과물로 취급하고,
     절대 손으로 고치지 않는다 — 다음 재계산 때 덮어써지기 때문.
     fee_rate_krw/usd는 거래대금(원화 환산) 대비 수수료+세금 추정 비율 — 국내/해외 거래에
-    각각 다르게 적용되며, state에 담겨 반환되어 이후에도 계속 같은 비율로 재사용된다."""
+    각각 다르게 적용되며, state에 담겨 반환되어 이후에도 계속 같은 비율로 재사용된다.
+
+    prior_holdings: replay 직전의 holdings 스냅샷(직전 시세 새로고침 결과). 현재가/등락률/
+    업데이트시각은 거래 기록만으로는 알 수 없는 정보라서, apply_transaction은 새로 만들어지는
+    각 종목 row의 현재가를 임시로 "그 종목의 첫 매수가"로 채운다. prior_holdings를 주면
+    종목명 기준으로 그 실시간 시세 값을 그대로 이어붙여서, 매매일지를 반영하거나 거래를 손볼
+    때마다 그날 거래하지 않은 종목들의 시세가 매수가 기준으로 리셋되는 걸 막는다."""
     holdings = pd.DataFrame(columns=HOLD_COLUMNS)
     state = {"cash": initial_capital, "initial": initial_capital,
              "fee_rate_krw": fee_rate_krw, "fee_rate_usd": fee_rate_usd}
@@ -617,6 +624,17 @@ def rebuild_portfolio_from_transactions(tx: pd.DataFrame, initial_capital: float
                                                         code_cache, sector_cache, rate, currency, fx_rate)
         if kind == "매도":
             realized_map[row["id"]] = realized if realized is not None else 0.0
+
+    if prior_holdings is not None and not prior_holdings.empty:
+        prior = prior_holdings.drop_duplicates("종목명").set_index("종목명")
+        for i, row in holdings.iterrows():
+            name = row["종목명"]
+            if name in prior.index:
+                prev_price = float(prior.loc[name, "현재가"])
+                if prev_price > 0:
+                    holdings.loc[i, "현재가"] = prev_price
+                    holdings.loc[i, "등락률"] = prior.loc[name, "등락률"]
+                    holdings.loc[i, "업데이트시각"] = prior.loc[name, "업데이트시각"]
 
     tx = tx.copy()
     for tid, val in realized_map.items():
