@@ -169,6 +169,31 @@ st.markdown(f"""
     }}
     [class*="st-key-watering_"] button[kind="primary"] p {{ color:#fff !important; }}
 
+    /* "종목별 보유현황" 타이틀 옆 등락률순 토글 — 라벨 없이 점 하나만, 아래 정렬 라디오
+       알약과 같은 계열의 작은 크기(new1에서 먼저 만들고 포팅함, 2026-08-28). */
+    [class*="st-key-change_sort_toggle"] {{ width:auto !important; }}
+    [class*="st-key-change_sort_toggle"] button {{
+        background:transparent !important; border:none !important; box-shadow:none !important;
+        padding:2px 4px !important; min-height:0 !important; height:auto !important;
+        line-height:1 !important;
+    }}
+    [class*="st-key-change_sort_toggle"] button p {{
+        font-size:15px !important; line-height:1 !important;
+    }}
+    [class*="st-key-change_sort_toggle"] button[kind="secondary"] p {{ color:{T['muted2']} !important; }}
+    [class*="st-key-change_sort_toggle"] button[kind="primary"] p {{ color:{UP_COLOR} !important; }}
+
+    /* "종목별 보유현황" 타이틀 줄 3칸만 전역 등폭 규칙을 덮어써서 원하는 비율로 */
+    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(1) {{
+        flex: 6 1 0 !important;
+    }}
+    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(2) {{
+        flex: 1 1 0 !important;
+    }}
+    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(3) {{
+        flex: 3 1 0 !important;
+    }}
+
     .tx-card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:10px; padding:10px 14px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }}
     .tx-left {{ font-size:13px; }}
     .tx-left .name {{ font-weight:700; color:{T['text']}; }}
@@ -508,11 +533,19 @@ if "fx_rate" not in st.session_state:
 
 fx_rate = st.session_state["fx_rate"]
 
+# 앱을 새로 열었을 때(세션당 1회) 자동으로 시세를 한 번 새로고침 — new1에서 먼저 만들고
+# 포팅함(2026-08-28). "시세 새로고침" 버튼과 완전히 같은 로직을 세션 시작 시 1회 자동
+# 실행하는 것 — 버튼은 그대로 남아있어 이후에도 수동으로 또 쓸 수 있음.
+auto_refresh_triggered = False
+if "auto_refreshed" not in st.session_state:
+    st.session_state["auto_refreshed"] = True
+    auto_refresh_triggered = True
+
 top_l, top_r = st.columns([5, 2])
 with top_r:
     refresh_clicked_top = st.button("시세 새로고침", use_container_width=True, key="refresh_btn_top")
 
-if refresh_clicked_top:
+if refresh_clicked_top or auto_refresh_triggered:
     with st.spinner("종목명으로 시세를 찾는 중..."):
         holdings, refresh_report = refresh_all_prices(holdings)
         st.session_state["index_quotes"] = fetch_index_quotes()
@@ -774,26 +807,42 @@ with tab_port:
                 st.markdown(rows_html, unsafe_allow_html=True)
 
     # ---- 종목별 보유현황 ----
-    # "등락률"을 맨 앞에 둠 — 다른 정렬 기준보다 오늘 하루 등락이 더 중요하다는 사용자 판단
-    # (2026-08-28, new1에서 먼저 추가하고 포팅함)에 따라 우선순위가 가장 높은 자리에 배치.
-    SORT_OPTIONS = {"등락률": "change", "비중": "weight", "섹터": "sector", "현재가": "price",
+    SORT_OPTIONS = {"비중": "weight", "섹터": "sector", "현재가": "price",
                      "평가금액": "valuation", "손익": "profit"}
     if "sort_mode" not in st.session_state:
         st.session_state.sort_mode = "weight"
+    if "change_sort_active" not in st.session_state:
+        st.session_state.change_sort_active = False
 
     last_updated = ""
     updated_vals = [v for v in df["업데이트시각"].tolist() if v]
     if updated_vals:
         last_updated = max(updated_vals)
 
-    col_title2, col_updated = st.columns([2, 1.3])
-    with col_title2:
-        st.markdown("##### 종목별 보유현황")
-    with col_updated:
-        st.markdown(
-            f"<div style='text-align:right;font-size:11px;color:{T['muted2']};padding-top:10px;'>{last_updated}</div>",
-            unsafe_allow_html=True,
-        )
+    # 전역 CSS(`div[data-testid="stColumn"] { flex:1 1 0 !important; }`)가 모든 st.columns()
+    # 비율을 강제로 동일폭으로 만들어버리므로, 이 줄만 st.container(key=...)로 감싸서
+    # [class*="st-key-holdings_title_row"] 스코프 CSS로 비율을 다시 덮어씀(new1에서 먼저
+    # 발견·수정하고 포팅함, 2026-08-28).
+    with st.container(key="holdings_title_row"):
+        col_title2, col_change_toggle, col_updated = st.columns(3)
+        with col_title2:
+            st.markdown("##### 종목별 보유현황")
+        with col_change_toggle:
+            # 매일 가장 먼저 확인하는 기준이라 타이틀 옆에서 바로 토글할 수 있게 함. 라벨
+            # 없이 동그라미 점 하나만 — 안 눌림=옅은 회색, 눌림=빨강. 아래 정렬 라디오와는
+            # 독립된 별도 상태(change_sort_active)로 두고, 라디오 옵션 목록엔 "등락률"을
+            # 안 넣음(중복 노출 방지).
+            is_change_sort = st.session_state.change_sort_active
+            if st.button("●", key="change_sort_toggle",
+                         type="primary" if is_change_sort else "secondary",
+                         help="등락률순 정렬"):
+                st.session_state.change_sort_active = not is_change_sort
+                st.rerun()
+        with col_updated:
+            st.markdown(
+                f"<div style='text-align:right;font-size:11px;color:{T['muted2']};padding-top:10px;'>{last_updated}</div>",
+                unsafe_allow_html=True,
+            )
 
     # ---- 코스피 / 코스닥 지수 (상단 새로고침에 같이 갱신됨) ----
     idx = st.session_state.get("index_quotes") or {}
@@ -828,7 +877,7 @@ with tab_port:
     for i, s in enumerate(df.sort_values("평가금액", ascending=False)["섹터"].unique()):
         sector_color_map[s] = SECTOR_PALETTE[i % len(SECTOR_PALETTE)]
 
-    mode = st.session_state.sort_mode
+    mode = "change" if st.session_state.change_sort_active else st.session_state.sort_mode
     if mode == "change":
         df_sorted = df.sort_values("등락률", ascending=False)
     elif mode == "sector":
