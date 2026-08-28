@@ -774,7 +774,9 @@ with tab_port:
                 st.markdown(rows_html, unsafe_allow_html=True)
 
     # ---- 종목별 보유현황 ----
-    SORT_OPTIONS = {"비중": "weight", "섹터": "sector", "현재가": "price",
+    # "등락률"을 맨 앞에 둠 — 다른 정렬 기준보다 오늘 하루 등락이 더 중요하다는 사용자 판단
+    # (2026-08-28, new1에서 먼저 추가하고 포팅함)에 따라 우선순위가 가장 높은 자리에 배치.
+    SORT_OPTIONS = {"등락률": "change", "비중": "weight", "섹터": "sector", "현재가": "price",
                      "평가금액": "valuation", "손익": "profit"}
     if "sort_mode" not in st.session_state:
         st.session_state.sort_mode = "weight"
@@ -827,7 +829,9 @@ with tab_port:
         sector_color_map[s] = SECTOR_PALETTE[i % len(SECTOR_PALETTE)]
 
     mode = st.session_state.sort_mode
-    if mode == "sector":
+    if mode == "change":
+        df_sorted = df.sort_values("등락률", ascending=False)
+    elif mode == "sector":
         sector_totals = df.groupby("섹터")["평가금액"].sum().sort_values(ascending=False)
         sector_order = {s: i for i, s in enumerate(sector_totals.index)}
         df_sorted = df.copy()
