@@ -24,6 +24,8 @@ from portfolio_core import (
     load_sector_history, snapshot_sector_history,
     refresh_all_prices, fetch_index_quotes, fetch_fx_rate, get_current_prices_for_names, get_closed_out_last_sells,
     compute_metrics, compute_sector_weights,
+    get_holding_trade_summary, get_holding_trade_summary_all_time,
+    get_holding_trade_points, get_holding_avg_price_path,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
@@ -128,13 +130,44 @@ st.markdown(f"""
 
     .stock-card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:12px; padding:10px 16px; margin-bottom:7px; }}
     .stock-top {{ display:flex; justify-content:space-between; align-items:baseline; }}
-    .stock-name {{ font-size:15px; font-weight:700; color:{T['text']}; }}
-    .stock-weight-inline {{ font-size:11px; color:{T['muted']}; margin-left:6px; }}
+    .stock-title-group {{ flex:1 1 auto; min-width:0; max-width:calc(100% - 180px); }}
+    .stock-name {{ font-size:13px; font-weight:700; color:{T['text']}; white-space:nowrap; }}
     .sector-tag {{ font-size:10.5px; padding:2px 7px; border-radius:5px; font-weight:600; flex-shrink:0; }}
     .stock-grid {{ display:grid; grid-template-columns: 0.7fr 1.05fr 1.05fr 1.3fr; gap:6px; margin-top:7px; }}
     .cell .top {{ font-size:12.5px; font-weight:700; color:{T['text']}; }}
     .cell .bottom {{ font-size:11px; color:{T['muted']}; margin-top:2px; }}
     .stock-foot {{ display:flex; justify-content:flex-end; margin-top:6px; font-size:10px; color:{T['muted2']}; }}
+    .trade-summary {{ display:flex; flex-wrap:wrap; gap:3px 16px; font-size:11px; color:{T['muted']}; margin:10px 2px 6px; }}
+    .trade-summary + .trade-summary {{ margin-top:2px; }}
+    .trade-summary b {{ color:{T['text']}; font-weight:700; }}
+    .trade-summary-label {{
+        font-size:10px; font-weight:700; color:{T['muted2']}; text-transform:uppercase;
+        letter-spacing:0.3px; flex-basis:100%;
+    }}
+
+    /* 보유종목 카드 우측상단 "WATERING" 칩(=매수/매도 내역·물타기 그래프 토글) — new1의
+       동일 CSS를 그대로 포팅함(2026-08-28). */
+    [class*="st-key-holding_wrap_"] {{ position:relative; }}
+    [class*="st-key-watering_"] {{
+        position:absolute; top:11px; right:108px; z-index:5; width:auto !important;
+    }}
+    [class*="st-key-watering_"] button {{
+        padding:2px 7px !important; min-height:0 !important;
+        height:auto !important; border-radius:5px !important;
+        line-height:1.4 !important; border:none !important;
+        box-shadow:none !important;
+    }}
+    [class*="st-key-watering_"] button p {{
+        font-size:10.5px !important; font-weight:400 !important; line-height:1.4 !important;
+    }}
+    [class*="st-key-watering_"] button[kind="secondary"] {{
+        background:{T['muted']}22 !important; color:{T['text']} !important;
+    }}
+    [class*="st-key-watering_"] button[kind="secondary"] p {{ color:{T['text']} !important; }}
+    [class*="st-key-watering_"] button[kind="primary"] {{
+        background:{T['muted']} !important; color:#fff !important;
+    }}
+    [class*="st-key-watering_"] button[kind="primary"] p {{ color:#fff !important; }}
 
     .tx-card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:10px; padding:10px 14px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }}
     .tx-left {{ font-size:13px; }}
@@ -333,6 +366,117 @@ def check_password() -> bool:
         else:
             st.error("비밀번호가 틀렸습니다.")
     return False
+
+
+def _render_holding_detail(r: dict, tx: pd.DataFrame, T: dict):
+    """보유종목 카드를 눌렀을 때 펼쳐지는 상세 — 매수/매도 요약 + "물타기 적정성" 그래프.
+    new1의 동일 함수를 포팅함(2026-08-28) — meritz는 종목마다 통화(원/USD)가 달라서, 금액
+    표시 단위(원 vs $)만 종목의 통화에 맞춰 분기함. 실현손익은 통화와 무관하게 항상 원화
+    (apply_transaction이 매수/매도 시점에 원화로 환산해서 저장하므로)."""
+    name = r["종목명"]
+    is_usd = r.get("통화") == "USD"
+    unit = "$" if is_usd else "원"
+    amt_fmt = (lambda v: f"${v:,.2f}") if is_usd else (lambda v: f"{v:,.0f}원")
+    price_fmt = (lambda v: f"${v:,.2f}") if is_usd else (lambda v: f"{v:,.0f}원")
+
+    trades = get_holding_trade_points(tx, name)
+    buys = trades[trades["구분"] == "매수"]
+    if buys.empty:
+        st.caption("매수 기록을 찾을 수 없습니다.")
+        return
+
+    all_time = get_holding_trade_summary_all_time(tx, name)
+    all_time_color = UP_COLOR if all_time["realized_pnl"] >= 0 else DOWN_COLOR
+    summary = get_holding_trade_summary(tx, name)
+    realized_color = UP_COLOR if summary["realized_pnl"] >= 0 else DOWN_COLOR
+    st.markdown(f"""
+    <div class="trade-summary">
+        <span class="trade-summary-label">누적</span>
+        <span>매수 <b>{all_time['buy_count']}건</b> · {amt_fmt(all_time['buy_amount'])}</span>
+        <span>매도 <b>{all_time['sell_count']}건</b> · {amt_fmt(all_time['sell_amount'])}
+            (실현손익 <span style="color:{all_time_color}">{all_time['realized_pnl']:,.0f}원</span>)</span>
+    </div>
+    <div class="trade-summary">
+        <span class="trade-summary-label">이번 사이클</span>
+        <span>매수 <b>{summary['buy_count']}건</b> · {amt_fmt(summary['buy_amount'])}</span>
+        <span>매도 <b>{summary['sell_count']}건</b> · {amt_fmt(summary['sell_amount'])}
+            (실현손익 <span style="color:{realized_color}">{summary['realized_pnl']:,.0f}원</span>)</span>
+    </div>
+    """, unsafe_allow_html=True)
+
+    entry_date = buys.iloc[0]["날짜"]
+    entry_price = float(buys.iloc[0]["단가"])
+    current_price = float(r["현재가"])
+    avg_price = float(r["평단가"])
+    today = today_kst_str()
+    sells = trades[trades["구분"] == "매도"]
+
+    avg_path = get_holding_avg_price_path(tx, name)
+    avg_x = list(avg_path["날짜"]) + [today]
+    avg_y = list(avg_path["평단가"]) + [avg_price]
+
+    hover_price = "%{x}<br>%{y:,.2f}" + unit + "<extra></extra>" if is_usd else "%{x}<br>%{y:,.0f}" + unit + "<extra></extra>"
+    hover_avg = ("%{x}<br>평단가 %{y:,.2f}" + unit + "<extra></extra>") if is_usd else ("%{x}<br>평단가 %{y:,.0f}" + unit + "<extra></extra>")
+    hover_buy = ("%{x}<br>매수 %{y:,.2f}" + unit + " · %{customdata:.0f}주<extra></extra>") if is_usd else ("%{x}<br>매수 %{y:,.0f}" + unit + " · %{customdata:.0f}주<extra></extra>")
+    hover_sell = ("%{x}<br>매도 %{y:,.2f}" + unit + " · %{customdata:.0f}주<extra></extra>") if is_usd else ("%{x}<br>매도 %{y:,.0f}" + unit + " · %{customdata:.0f}주<extra></extra>")
+
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=[entry_date, today], y=[entry_price, current_price], mode="lines+markers",
+        name="현재가", line=dict(color=T["muted"], width=2, dash="dot"),
+        marker=dict(size=6, color=T["muted"]),
+        hovertemplate=hover_price,
+    ))
+    fig.add_trace(go.Scatter(
+        x=avg_x, y=avg_y, mode="lines", name="평단가",
+        line=dict(color=DOWN_COLOR, width=2, shape="hv"),
+        hovertemplate=hover_avg,
+    ))
+    fig.add_trace(go.Scatter(
+        x=buys["날짜"], y=buys["단가"], mode="markers", name="매수",
+        marker=dict(size=11, color=DOWN_COLOR, symbol="triangle-up"),
+        customdata=buys["수량"],
+        hovertemplate=hover_buy,
+    ))
+    if not sells.empty:
+        fig.add_trace(go.Scatter(
+            x=sells["날짜"], y=sells["단가"], mode="markers", name="매도",
+            marker=dict(size=11, color=UP_COLOR, symbol="triangle-down"),
+            customdata=sells["수량"],
+            hovertemplate=hover_sell,
+        ))
+    fig.add_hline(y=entry_price, line_dash="dash", line_color=T["muted2"], line_width=1,
+                  annotation_text="최초진입가", annotation_font_size=10,
+                  annotation_font_color=T["muted2"])
+    fig.update_layout(
+        height=260,
+        margin=dict(l=10, r=10, t=20, b=30),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(color=T["text"], size=11),
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5,
+                    bgcolor="rgba(0,0,0,0)"),
+        xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+        yaxis=dict(showgrid=True, gridcolor=T["border"], tickfont=dict(size=9, color=T["muted"]),
+                   tickformat=(",.2f" if is_usd else ",.0f"), fixedrange=True),
+        hovermode="closest",
+        dragmode=False,
+    )
+    st.plotly_chart(fig, width="stretch", config={
+        "displayModeBar": False, "scrollZoom": False, "doubleClick": False,
+    }, key=f"holding_chart_{r['종목코드']}")
+
+    pct_current = (current_price - entry_price) / entry_price * 100 if entry_price else 0.0
+    pct_avg = (avg_price - entry_price) / entry_price * 100 if entry_price else 0.0
+    cur_c = UP_COLOR if pct_current >= 0 else DOWN_COLOR
+    avg_c = UP_COLOR if pct_avg >= 0 else DOWN_COLOR
+    st.markdown(
+        f"<div style='font-size:12px;color:{T['muted']};display:flex;justify-content:space-between;"
+        f"margin-bottom:12px;'>"
+        f"<span>현재가는 최초진입가 대비 <span style='color:{cur_c}'>{pct_current:+.1f}%</span></span>"
+        f"<span>내 평단가는 최초진입가 대비 <span style='color:{avg_c}'>{pct_avg:+.1f}%</span></span>"
+        f"</div>", unsafe_allow_html=True)
 
 
 if not check_password():
@@ -703,6 +847,9 @@ with tab_port:
     if not rows:
         st.info("보유 종목이 없습니다. '거래 기록' 탭에서 매수를 기록해보세요.")
     else:
+        if "holding_detail_open" not in st.session_state:
+            st.session_state.holding_detail_open = None
+
         for r in rows:
             pc = UP_COLOR if r["손익"] >= 0 else DOWN_COLOR
             psign = "+" if r["손익"] >= 0 else ""
@@ -713,24 +860,34 @@ with tab_port:
             price_str = f"${r['현재가']:,.2f}" if is_usd else f"{r['현재가']:,.0f}"
             avg_str = f"${r['평단가']:,.2f}" if is_usd else f"{r['평단가']:,.0f}"
 
-            st.markdown(f"""
-            <div class="stock-card">
-                <div class="stock-top">
-                    <span><span class="stock-name">{r['종목명']}</span>
-                        <span class="stock-weight-inline">비중 {r['비중']:.1f}%</span></span>
-                    <span class="sector-tag" style="background:{sc}22;color:{sc}">{r['섹터']}</span>
-                </div>
-                <div class="stock-grid">
-                    <div class="cell"><div class="top">{r['수량']:.0f}주</div></div>
-                    <div class="cell"><div class="top">{price_str}</div><div class="bottom">{avg_str}</div></div>
-                    <div class="cell"><div class="top">{r['평가금액']:,.0f}</div><div class="bottom">{r['매입금액']:,.0f}</div></div>
-                    <div class="cell">
-                        <div class="top" style="color:{pc}">{psign}{r['손익']:,.0f}</div>
-                        <div class="bottom"><span style="color:{pc}">{psign}{r['손익률']:.1f}%</span> <span style="color:{cc}">{csign}{r['등락률']:.1f}%</span></div>
+            code = r["종목코드"]
+            is_open = st.session_state.holding_detail_open == code
+
+            with st.container(key=f"holding_wrap_{code}"):
+                st.markdown(f"""
+                <div class="stock-card">
+                    <div class="stock-top">
+                        <span class="stock-title-group"><span class="stock-name">{r['종목명']}</span></span>
+                        <span class="sector-tag" style="background:{sc}22;color:{sc}">{r['섹터']}</span>
+                    </div>
+                    <div class="stock-grid">
+                        <div class="cell"><div class="top">{r['수량']:.0f}주</div><div class="bottom">{r['비중']:.1f}%</div></div>
+                        <div class="cell"><div class="top">{price_str}</div><div class="bottom">{avg_str}</div></div>
+                        <div class="cell"><div class="top">{r['평가금액']:,.0f}</div><div class="bottom">{r['매입금액']:,.0f}</div></div>
+                        <div class="cell">
+                            <div class="top" style="color:{pc}">{psign}{r['손익']:,.0f}</div>
+                            <div class="bottom"><span style="color:{pc}">{psign}{r['손익률']:.1f}%</span> <span style="color:{cc}">{csign}{r['등락률']:.1f}%</span></div>
+                        </div>
                     </div>
                 </div>
-            </div>
-            """, unsafe_allow_html=True)
+                """, unsafe_allow_html=True)
+
+                if st.button("WATERING", key=f"watering_{code}",
+                             type="primary" if is_open else "secondary"):
+                    st.session_state.holding_detail_open = None if is_open else code
+                    st.rerun()
+            if is_open:
+                _render_holding_detail(r, tx, T)
 
 # ==================================================================== #
 # 탭 2: 거래 기록 + 자산 추이

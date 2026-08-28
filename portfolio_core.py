@@ -477,6 +477,92 @@ def get_closed_out_last_sells(holdings_df: pd.DataFrame, tx_df: pd.DataFrame) ->
 
 
 # ------------------------------------------------------------------ #
+# 종목별 보유현황 카드 클릭 시 상세(매수/매도 내역 + "물타기 적정성" 그래프)
+# new1의 동일 함수를 그대로 포팅함(2026-08-28) — 단가/수량/구분/날짜/실현손익만 다루고
+# 통화·환율에는 관여하지 않는 순수 거래 재생 로직이라 meritz의 KRW/USD 혼합 구조에도
+# 수정 없이 그대로 쓸 수 있다(단가는 이미 종목의 원래 통화로, 실현손익은 이미 원화로
+# apply_transaction이 계산해서 저장해두므로).
+# ------------------------------------------------------------------ #
+def _current_cycle_transactions(tx: pd.DataFrame, name: str) -> pd.DataFrame:
+    """그 종목의 거래 중 "현재 보유 사이클"(마지막으로 전량매도해서 보유수량이 0이 된
+    시점 이후 ~ 지금)에 해당하는 것만 남긴다. 전량매도 후 재진입했다면 이전 사이클 거래는
+    제외해서 평단가/진입가가 뒤섞이지 않게 한다."""
+    t = tx[tx["종목명"] == name].copy()
+    if t.empty:
+        return t
+    t["수량"] = pd.to_numeric(t["수량"], errors="coerce").fillna(0)
+    t["_ord"] = t.index
+    t = t.sort_values(["날짜", "_ord"]).reset_index(drop=True)
+    signed_qty = t["수량"].where(t["구분"] == "매수", -t["수량"])
+    cum_qty = signed_qty.cumsum()
+    zero_points = cum_qty[cum_qty.abs() < 1e-6]
+    if not zero_points.empty:
+        t = t.iloc[zero_points.index[-1] + 1:]
+    return t.drop(columns="_ord").reset_index(drop=True)
+
+
+def get_holding_trade_summary_all_time(tx: pd.DataFrame, name: str) -> dict:
+    """그 종목의 전체 매매 이력(사이클 구분 없이) 매수/매도 건수·누적금액·실현손익 합계."""
+    t = tx[tx["종목명"] == name].copy()
+    t["수량"] = pd.to_numeric(t["수량"], errors="coerce").fillna(0)
+    t["단가"] = pd.to_numeric(t["단가"], errors="coerce").fillna(0)
+    buys = t[t["구분"] == "매수"]
+    sells = t[t["구분"] == "매도"]
+    return {
+        "buy_count": int(len(buys)),
+        "buy_amount": float((buys["수량"] * buys["단가"]).sum()),
+        "sell_count": int(len(sells)),
+        "sell_amount": float((sells["수량"] * sells["단가"]).sum()),
+        "realized_pnl": float(pd.to_numeric(sells["실현손익"], errors="coerce").fillna(0).sum()),
+    }
+
+
+def get_holding_trade_summary(tx: pd.DataFrame, name: str) -> dict:
+    """현재 보유 사이클의 매수/매도 건수·누적금액·실현손익 합계. 평단가는 여기서 다루지
+    않음 — holdings(portfolio_data.csv)의 기존 값을 그대로 쓸 것(매도가 껴있으면 단순
+    재평균은 틀림)."""
+    t = _current_cycle_transactions(tx, name)
+    t["단가"] = pd.to_numeric(t["단가"], errors="coerce").fillna(0)
+    buys = t[t["구분"] == "매수"]
+    sells = t[t["구분"] == "매도"]
+    return {
+        "buy_count": int(len(buys)),
+        "buy_amount": float((buys["수량"] * buys["단가"]).sum()),
+        "sell_count": int(len(sells)),
+        "sell_amount": float((sells["수량"] * sells["단가"]).sum()),
+        "realized_pnl": float(pd.to_numeric(sells["실현손익"], errors="coerce").fillna(0).sum()),
+    }
+
+
+def get_holding_trade_points(tx: pd.DataFrame, name: str) -> pd.DataFrame:
+    """현재 보유 사이클의 매수/매도 거래를 날짜순으로. 반환 컬럼: 날짜, 구분, 단가, 수량."""
+    t = _current_cycle_transactions(tx, name)
+    t["단가"] = pd.to_numeric(t["단가"], errors="coerce")
+    return t[["날짜", "구분", "단가", "수량"]].reset_index(drop=True)
+
+
+def get_holding_avg_price_path(tx: pd.DataFrame, name: str) -> pd.DataFrame:
+    """현재 보유 사이클에서 매수할 때마다 평단가가 어떻게 바뀌었는지(계단식) 반환.
+    반환 컬럼: 날짜, 평단가 — 매수 시점에만 값이 있음(매도는 평단가에 영향 없음)."""
+    t = _current_cycle_transactions(tx, name)
+    if t.empty:
+        return pd.DataFrame(columns=["날짜", "평단가"])
+    t["단가"] = pd.to_numeric(t["단가"], errors="coerce").fillna(0)
+    qty = 0.0
+    avg = 0.0
+    points = []
+    for _, row in t.iterrows():
+        if row["구분"] == "매수":
+            new_qty = qty + row["수량"]
+            avg = (qty * avg + row["수량"] * row["단가"]) / new_qty if new_qty else 0.0
+            qty = new_qty
+            points.append((row["날짜"], avg))
+        else:
+            qty -= row["수량"]
+    return pd.DataFrame(points, columns=["날짜", "평단가"])
+
+
+# ------------------------------------------------------------------ #
 # 지표 계산
 # ------------------------------------------------------------------ #
 def compute_metrics(df: pd.DataFrame, cash: float, fx_rate: float = 1.0):
