@@ -1130,19 +1130,21 @@ with tab_tx:
         basis = iva["sensitivity_basis"]
 
         def _s(v):
-            return "—" if v is None else f"{v:.2f}"
+            return "—" if v is None else f"{v:+.2f}"
 
         def _sens_line(label, a, r, t):
             return (
                 f"<div style='font-size:11px;color:{T['muted']};margin:0 0 3px'>"
-                f"민감도·{label} <span style='color:{T['muted2']}'>({basis})</span>  "
+                f"RP·{label} <span style='color:{T['muted2']}'>({basis})</span>  "
                 f"<b style='color:{T['text']}'>누적 {_s(a)}</b> · "
                 f"<b style='color:{NEW_COLOR}'>5일 {_s(r)}</b> · "
                 f"<b style='color:{UP_COLOR}'>당일 {_s(t)}</b></div>"
             )
 
         st.markdown(
-            _sens_line("내 주식", iva["sens_all"], iva["sens_recent"], iva["sens_today"])
+            "<div style='font-size:10px;color:" + T["muted2"] + ";margin:2px 0 1px'>"
+            "RP (relative performance) — 0=시장과 동일, 양수=시장보다 잘함</div>"
+            + _sens_line("내 주식", iva["sens_all"], iva["sens_recent"], iva["sens_today"])
             + _sens_line("내 계좌", iva["acct_sens_all"], iva["acct_sens_recent"], iva["acct_sens_today"]),
             unsafe_allow_html=True,
         )
@@ -1207,18 +1209,18 @@ with tab_tx:
 
         fig_s = go.Figure()
         for col, nm, color, w in (
-            ("민감도누적", "누적", T["text"], 2.6),
-            ("민감도최근", "5일", NEW_COLOR, 2.0),
-            ("민감도당일", "당일", UP_COLOR, 1.4),
+            ("상대성과누적", "누적", T["text"], 2.6),
+            ("상대성과최근", "5일", NEW_COLOR, 2.0),
+            ("상대성과당일", "당일", UP_COLOR, 1.4),
         ):
-            cd = ["—" if pd.isna(v) else f"{v:.2f}" for v in me[col]]
+            cd = ["—" if pd.isna(v) else f"{v:+.2f}" for v in me[col]]
             fig_s.add_trace(go.Scatter(
                 x=me["날짜"], y=me[col], name=nm, mode="lines+markers",
                 line=dict(color=color, width=w), marker=dict(size=4),
                 connectgaps=True, customdata=cd,
-                hovertemplate="<b>" + nm + "</b> 민감도 %{customdata}<extra></extra>",
+                hovertemplate="<b>" + nm + "</b> RP %{customdata}<extra></extra>",
             ))
-        fig_s.add_hline(y=1, line_dash="dash", line_color=T["muted2"], line_width=1)  # y=1 = 시장 동일
+        fig_s.add_hline(y=0, line_dash="dash", line_color=T["muted2"], line_width=1)  # y=0 = 시장 동일
         fig_s.update_layout(
             height=275, margin=dict(l=40, r=8, t=8, b=30),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -1227,9 +1229,9 @@ with tab_tx:
                             font=dict(size=11, color=T["text"])),
             xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
             yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=False,
-                       range=[-1.1, 3.2], dtick=0.5,
-                       tickfont=dict(size=9, color=T["muted"]), tickformat=".1f", fixedrange=True,
-                       hoverformat=".2f"),
+                       range=[-3.2, 3.2], dtick=1.0,
+                       tickfont=dict(size=9, color=T["muted"]), tickformat="+.0f", fixedrange=True,
+                       hoverformat="+.2f"),
             hovermode="x unified", dragmode=False,
         )
 

@@ -1035,23 +1035,16 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
         latest["계좌"] = (_last(me["계좌수익"]), _last(me["계좌당일"]))
         latest["벤치"] = (_last(me["벤치누적"]), _last(me["벤치당일"]))
 
-    # 민감도 = 방향 일관 점수 (2026-09-02, new1 §6-17과 동일 로직):
-    #  하락장(Δ벤치<0): Δ주식/Δ벤치  ·  상승장(Δ벤치>0)&내주식↑: Δ벤치/Δ주식(뒤집음)
-    #  상승장인데 내주식↓: 상한 3.0  ·  점수 clamp [-1, 3]  ·  누적/5일 = 구간별 점수 중앙값
-    #  1=시장 동일, <1=시장 이김, >1=시장에 짐. 음수는 하락장 한정(역행).
-    SCORE_CAP, SCORE_FLOOR = 3.0, -1.0
+    # RP(relative performance) = 구간별 (Δ내수익 − Δ벤치) / |Δ벤치| (2026-09-02, new1 §6-17과 동일).
+    #  0 = 시장과 동일, 양수 = 시장보다 잘함, 음수 = 못함 (상승·하락장 한 식). 표시는 ±3 clamp.
+    #  누적/5일 = 구간별 점수 중앙값(벤치 0 근처인 날 값 폭발 방어), 당일 = 마지막 1구간.
+    CLAMP = 3.0
     dbe = me["벤치당일"].values
 
     def _interval_score(dm, db):
         if pd.isna(dm) or pd.isna(db) or abs(db) < 1e-9:
             return None
-        if db < 0:
-            s = dm / db
-        elif dm > 0:
-            s = db / dm
-        else:
-            s = SCORE_CAP
-        return min(max(s, SCORE_FLOOR), SCORE_CAP)
+        return min(max((dm - db) / abs(db), -CLAMP), CLAMP)
 
     def _median(vals):
         v = sorted(x for x in vals if x is not None)
@@ -1074,8 +1067,8 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
 
     s_all, s_rec, s_tod = _sens_cols(me["주식수익"].diff())
     a_all, a_rec, a_tod = _sens_cols(me["계좌수익"].diff())
-    for col, data in (("민감도누적", s_all), ("민감도최근", s_rec), ("민감도당일", s_tod),
-                       ("계좌민감도누적", a_all), ("계좌민감도최근", a_rec), ("계좌민감도당일", a_tod)):
+    for col, data in (("상대성과누적", s_all), ("상대성과최근", s_rec), ("상대성과당일", s_tod),
+                       ("계좌상대성과누적", a_all), ("계좌상대성과최근", a_rec), ("계좌상대성과당일", a_tod)):
         me[col] = pd.Series(data, index=me.index, dtype="float64")
 
     def _tl(x):
