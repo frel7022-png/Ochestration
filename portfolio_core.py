@@ -15,6 +15,7 @@ app.py(웹 화면)와 ingest_daily.py(일일 매매일지 반영 스크립트)�
   "그 날짜의 기존 CSV 기반 거래는 지우고 이번 것으로 교체 후 전체 재생"한다.
 """
 
+import ast
 import io
 import uuid
 from datetime import datetime
@@ -34,6 +35,9 @@ HISTORY_FILE = HERE / "asset_history.csv"
 SECTOR_HISTORY_FILE = HERE / "sector_history.csv"
 CODE_CACHE_FILE = HERE / "stock_code_cache.csv"
 SECTOR_CACHE_FILE = HERE / "stock_sector_cache.csv"
+INDEX_HISTORY_FILE = HERE / "index_history.csv"          # 날짜별 코스피/코스닥 종가 (지수 대비 계좌, new1 §6-17 포팅)
+DOM_ASSET_HISTORY_FILE = HERE / "dom_asset_history.csv"  # 날짜별 "국내주식 평가금액"(레드와이어/USD 제외)
+MARKET_CACHE_FILE = HERE / "stock_market_cache.csv"      # 종목명→KOSPI/KOSDAQ 영구 캐시(혼합지수 가중치용)
 
 HOLD_COLUMNS = ["종목명", "종목코드", "섹터", "수량", "평단가", "현재가", "등락률", "업데이트시각",
                 "통화", "매입금액KRW"]
@@ -727,6 +731,343 @@ def rebuild_portfolio_from_transactions(tx: pd.DataFrame, initial_capital: float
         tx.loc[tx["id"] == tid, "실현손익"] = val
 
     return holdings, state, tx
+
+
+# ================================================================== #
+# 지수 대비 계좌 (국내주식만, 레드와이어/USD 제외) — new1 §6-17 포팅 (2026-09-02)
+#   · 앱 상단 "최초자본 10,000,000 대비"는 그대로(RDW 손익 포함).
+#   · 이 지표는 순수 국내: 분모 D0(t) = 10,000,000 − 그 시점까지 RDW 순투입액(원화).
+#     내 계좌수익 = (국내주식평가 + 실제예수금) / D0 − 1  (RDW는 투입·현금유출이 상쇄돼 안 들어옴).
+#     내 주식 Rs = 국내주식만 100% 투자로 환산한 수익 → 코스피/코스닥과 1:1.
+# ================================================================== #
+def load_index_history() -> pd.DataFrame:
+    if INDEX_HISTORY_FILE.exists():
+        return pd.read_csv(INDEX_HISTORY_FILE)
+    return pd.DataFrame(columns=["날짜", "KOSPI", "KOSDAQ"])
+
+
+def save_index_history(df: pd.DataFrame) -> None:
+    df.to_csv(INDEX_HISTORY_FILE, index=False)
+
+
+def snapshot_index_history(kospi: float, kosdaq: float, on_date: str | None = None) -> None:
+    if not kospi or not kosdaq or kospi <= 0 or kosdaq <= 0:
+        return
+    d = on_date or today_kst_str()
+    hist = load_index_history()
+    hist = hist[hist["날짜"] != d]
+    hist = pd.concat([hist, pd.DataFrame([{"날짜": d, "KOSPI": kospi, "KOSDAQ": kosdaq}])])
+    save_index_history(hist.sort_values("날짜"))
+
+
+def load_dom_asset_history() -> pd.DataFrame:
+    if DOM_ASSET_HISTORY_FILE.exists():
+        return pd.read_csv(DOM_ASSET_HISTORY_FILE)
+    return pd.DataFrame(columns=["날짜", "국내주식평가"])
+
+
+def save_dom_asset_history(df: pd.DataFrame) -> None:
+    df.to_csv(DOM_ASSET_HISTORY_FILE, index=False)
+
+
+def snapshot_dom_asset_history(dom_stock_value_krw: float, on_date: str | None = None) -> None:
+    """국내주식(통화=원)만의 평가금액 원화 합계를 오늘자로 스냅샷. 같은 날짜는 덮어씀."""
+    if dom_stock_value_krw is None or dom_stock_value_krw < 0:
+        return
+    d = on_date or today_kst_str()
+    hist = load_dom_asset_history()
+    hist = hist[hist["날짜"] != d]
+    hist = pd.concat([hist, pd.DataFrame([{"날짜": d, "국내주식평가": float(dom_stock_value_krw)}])])
+    save_dom_asset_history(hist.sort_values("날짜"))
+
+
+def load_market_cache() -> dict:
+    """종목명 → "KOSPI" | "KOSDAQ" 영구 캐시(stock_code_cache.csv와 같은 패턴)."""
+    if MARKET_CACHE_FILE.exists():
+        df = pd.read_csv(MARKET_CACHE_FILE, dtype=str, keep_default_na=False)
+        return {k: v for k, v in zip(df["종목명"], df["시장"]) if k and v}
+    return {}
+
+
+def update_market_cache(new_entries: dict) -> None:
+    new_entries = {k: v for k, v in new_entries.items() if k and v in ("KOSPI", "KOSDAQ")}
+    if not new_entries:
+        return
+    cache = load_market_cache()
+    cache.update(new_entries)
+    pd.DataFrame(sorted(cache.items()), columns=["종목명", "시장"]).to_csv(MARKET_CACHE_FILE, index=False)
+
+
+def fetch_stock_markets(codes: list[str]) -> dict:
+    """종목코드 → "KOSPI"|"KOSDAQ". fetch_quotes와 같은 실시간 시세 API의
+    stockExchangeType.name 필드만 읽는다. 20개씩 청크."""
+    codes = [c for c in dict.fromkeys(codes) if c]
+    if not codes:
+        return {}
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"}
+    out = {}
+    for i in range(0, len(codes), 20):
+        chunk = codes[i:i + 20]
+        try:
+            resp = requests.get(
+                f"https://polling.finance.naver.com/api/realtime/domestic/stock/{','.join(chunk)}",
+                headers=headers, timeout=6)
+            resp.raise_for_status()
+            datas = resp.json().get("datas") or []
+        except Exception:
+            continue
+        for d in datas:
+            code = str(d.get("itemCode") or d.get("cd") or "").strip()
+            name = ((d.get("stockExchangeType") or {}).get("name") or "").strip().upper()
+            if code and name in ("KOSPI", "KOSDAQ"):
+                out[code] = name
+    return out
+
+
+def refresh_market_cache(holdings: pd.DataFrame) -> dict:
+    """holdings 중 캐시에 없는 (원화)종목만 시장 조회해 채운다. 반환: {종목명: 시장}."""
+    cache = load_market_cache()
+    need = [(str(r["종목명"]), str(r["종목코드"])) for _, r in holdings.iterrows()
+            if r["종목명"] and r["종목명"] not in cache and r["종목코드"]
+            and (r.get("통화") or "원") != "USD"]
+    if need:
+        by_code = fetch_stock_markets([c for _, c in need])
+        new = {name: by_code[code] for name, code in need if code in by_code}
+        update_market_cache(new)
+        cache.update(new)
+    return {str(r["종목명"]): cache[str(r["종목명"])] for _, r in holdings.iterrows()
+            if str(r["종목명"]) in cache}
+
+
+def fetch_daily_price_history(code: str, start_date: str, end_date: str) -> list[dict]:
+    """네이버 일별시세 API(api.finance.naver.com/siseJson.naver)에서 종목의 과거 일별
+    종가/거래량을 한 번에 받는다. "KOSPI"/"KOSDAQ" 심볼도 동작함.
+    반환: [{"날짜": "YYYY-MM-DD", "종가": float, "거래량": int}, ...] 날짜 오름차순."""
+    start, end = start_date.replace("-", ""), end_date.replace("-", "")
+    url = (f"https://api.finance.naver.com/siseJson.naver?symbol={code}"
+           f"&requestType=1&startTime={start}&endTime={end}&timeframe=day")
+    headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.naver.com/"}
+    try:
+        resp = requests.get(url, headers=headers, timeout=15)
+        resp.raise_for_status()
+        rows = ast.literal_eval(resp.text.strip())
+    except Exception:
+        return []
+    if not rows or len(rows) < 2:
+        return []
+    header, data = rows[0], rows[1:]
+    try:
+        i_date, i_close, i_vol = header.index("날짜"), header.index("종가"), header.index("거래량")
+    except ValueError:
+        return []
+    result = []
+    for row in data:
+        try:
+            d = row[i_date]
+            result.append({"날짜": f"{d[0:4]}-{d[4:6]}-{d[6:8]}",
+                           "종가": float(row[i_close]), "거래량": int(row[i_vol])})
+        except (IndexError, ValueError, TypeError):
+            continue
+    return result
+
+
+def _sort_tx_meritz(tx: pd.DataFrame) -> pd.DataFrame:
+    t = tx.copy().reset_index(drop=True)
+    t["_ord"] = range(len(t))
+    return t.sort_values(["날짜", "_ord"]).reset_index(drop=True)
+
+
+def _cash_by_date(tx: pd.DataFrame, initial_capital: float,
+                   fee_rate_krw: float = 0.0, fee_rate_usd: float = 0.0) -> dict:
+    """전체 거래(국내+USD)를 날짜순 재생하며 '그 날짜 종료 시점의 실제 예수금(원화)'을 기록.
+    apply_transaction을 그대로 재생에 씀. 반환: {날짜: 예수금} — 거래 있었던 날짜만."""
+    if tx is None or tx.empty:
+        return {}
+    holdings = pd.DataFrame(columns=HOLD_COLUMNS)
+    state = {"cash": float(initial_capital), "initial": float(initial_capital),
+             "fee_rate_krw": fee_rate_krw, "fee_rate_usd": fee_rate_usd}
+    code_cache, sector_cache = load_code_cache(), load_sector_cache()
+    out = {}
+    for _, row in _sort_tx_meritz(tx).iterrows():
+        cur = row.get("통화") or "원"
+        fx = float(row.get("환율") or 1.0) if cur == "USD" else 1.0
+        rate = fee_rate_usd if cur == "USD" else fee_rate_krw
+        holdings, state, _ = apply_transaction(
+            holdings, state, row["종목명"], row["구분"], float(row["수량"]), float(row["단가"]),
+            code_cache, sector_cache, rate, cur, fx)
+        out[row["날짜"]] = state["cash"]
+    return out
+
+
+def _cash_on(cash_map: dict, date: str, initial_capital: float) -> float:
+    prior = [d for d in cash_map if d <= date]
+    return cash_map[max(prior)] if prior else float(initial_capital)
+
+
+def _usd_invested_by_date(tx: pd.DataFrame) -> dict:
+    """USD 종목(레드와이어 등)에 그 날짜까지 순투입한 원화액 누적. {날짜: 누적액}.
+    amount_krw = 수량 × 단가 × 환율, 매수 +, 매도 −."""
+    if tx is None or tx.empty:
+        return {}
+    u = tx[(tx.get("통화") == "USD")].copy()
+    if u.empty:
+        return {}
+    u["_amt"] = (pd.to_numeric(u["수량"], errors="coerce").fillna(0)
+                 * pd.to_numeric(u["단가"], errors="coerce").fillna(0)
+                 * pd.to_numeric(u["환율"], errors="coerce").fillna(1.0)
+                 * u["구분"].map({"매수": 1.0, "매도": -1.0}).fillna(0.0))
+    g = u.groupby("날짜")["_amt"].sum().sort_index().cumsum()
+    return g.to_dict()
+
+
+def _usd_invested_on(usd_map: dict, date: str) -> float:
+    prior = [d for d in usd_map if d <= date]
+    return float(usd_map[max(prior)]) if prior else 0.0
+
+
+def _index_cum_returns(index_hist: pd.DataFrame, anchor: str) -> pd.DataFrame:
+    h = index_hist.copy()
+    h = h[h["날짜"] >= anchor].sort_values("날짜").reset_index(drop=True)
+    if h.empty:
+        return pd.DataFrame(columns=["날짜", "코스피", "코스닥"])
+    base_k, base_q = float(h.loc[0, "KOSPI"]), float(h.loc[0, "KOSDAQ"])
+    return pd.DataFrame({
+        "날짜": h["날짜"],
+        "코스피": pd.to_numeric(h["KOSPI"], errors="coerce") / base_k - 1.0,
+        "코스닥": pd.to_numeric(h["KOSDAQ"], errors="coerce") / base_q - 1.0,
+    })
+
+
+def _index_day_moves(index_hist: pd.DataFrame) -> pd.DataFrame:
+    if index_hist is None or index_hist.empty:
+        return pd.DataFrame(columns=["날짜", "코스피d", "코스닥d"])
+    h = index_hist.copy().sort_values("날짜").reset_index(drop=True)
+    return pd.DataFrame({
+        "날짜": h["날짜"],
+        "코스피d": pd.to_numeric(h["KOSPI"], errors="coerce").pct_change(),
+        "코스닥d": pd.to_numeric(h["KOSDAQ"], errors="coerce").pct_change(),
+    })
+
+
+def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, index_hist: pd.DataFrame,
+                              initial_capital: float, fee_rate_krw: float = 0.0, fee_rate_usd: float = 0.0,
+                              kospi_weight: float | None = None, beta_window: int = 5) -> dict:
+    """국내주식만 기준(레드와이어/USD 제외). 값은 전부 소수(0.0145 = +1.45%).
+
+    - 내 계좌수익(t) = (국내주식평가(t) + 실제예수금(t)) / D0(t) − 1.
+      D0(t) = initial_capital − 그 시점까지 USD 순투입 원화액.
+    - 내 주식 Rs(t) = 국내주식평가 구간변화에서 그 구간 국내 순매수대금을 뺀 순수 가격변동을
+      복리로 누적 → 지수와 1:1 비교 가능.
+    - 코스피/코스닥 = anchor일 종가 대비 누적등락(0 중심).
+    반환 dict 구조는 new1 §6-17과 동일(me/index/latest/sens_*/acct_sens_*/sensitivity_basis)."""
+    empty = {"me": pd.DataFrame(columns=["날짜", "계좌수익", "주식수익"]),
+             "index": pd.DataFrame(columns=["날짜", "코스피", "코스닥"]),
+             "latest": {}, "sensitivity": None,
+             "sens_all": None, "sens_recent": None, "sens_today": None,
+             "acct_sens_all": None, "acct_sens_recent": None, "acct_sens_today": None,
+             "sensitivity_basis": "혼합" if kospi_weight is not None else "코스피"}
+    if dom_asset_hist is None or dom_asset_hist.empty or index_hist is None or index_hist.empty:
+        return empty
+
+    snap = dom_asset_hist.copy().sort_values("날짜").reset_index(drop=True)
+    anchor = max(str(snap["날짜"].min()), str(index_hist["날짜"].min()))
+    snap = snap[snap["날짜"] >= anchor].reset_index(drop=True)
+    if snap.empty:
+        return empty
+
+    idx_cum = _index_cum_returns(index_hist, anchor)
+    cash_map = _cash_by_date(tx, initial_capital, fee_rate_krw, fee_rate_usd)
+    usd_map = _usd_invested_by_date(tx)
+
+    # 국내(통화=원) 거래대금만 Rs의 flow 계산에 씀 (USD 종목 값은 국내주식평가에 안 들어가므로).
+    t = tx.copy() if tx is not None and not tx.empty else pd.DataFrame(columns=["날짜", "구분", "수량", "단가", "통화"])
+    if not t.empty:
+        krw = (t.get("통화").fillna("원") != "USD") if "통화" in t else pd.Series(True, index=t.index)
+        t["_amt"] = (pd.to_numeric(t["수량"], errors="coerce").fillna(0.0)
+                     * pd.to_numeric(t["단가"], errors="coerce").fillna(0.0)
+                     * t["구분"].map({"매수": 1.0, "매도": -1.0}).fillna(0.0)
+                     * krw.astype(float))
+
+    rows = []
+    prev_S = prev_d = None
+    Rs = 0.0
+    for _, r in snap.iterrows():
+        d = str(r["날짜"])
+        S = float(r["국내주식평가"])
+        cash_d = _cash_on(cash_map, d, initial_capital)
+        d0 = initial_capital - _usd_invested_on(usd_map, d)
+        acct = (S + cash_d) / d0 - 1.0 if d0 else 0.0
+        if prev_S is None:
+            Rs = 0.0
+        elif prev_S > 0:
+            flow = float(t.loc[(t["날짜"] > prev_d) & (t["날짜"] <= d), "_amt"].sum()) if not t.empty else 0.0
+            Rs = (1.0 + Rs) * (1.0 + (S - prev_S - flow) / prev_S) - 1.0
+        rows.append({"날짜": d, "계좌수익": acct, "주식수익": Rs})
+        prev_S, prev_d = S, d
+
+    me = pd.DataFrame(rows, columns=["날짜", "계좌수익", "주식수익"])
+    wk = None if kospi_weight is None else min(max(float(kospi_weight), 0.0), 1.0)
+
+    bench = idx_cum.copy()
+    bench["_b"] = bench["코스피"] if wk is None else wk * bench["코스피"] + (1.0 - wk) * bench["코스닥"]
+    bdates, bvals = list(bench["날짜"]), list(bench["_b"])
+
+    def _bench_on(d):
+        prior = [v for bd, v in zip(bdates, bvals) if bd <= d]
+        return float(prior[-1]) if prior else None
+
+    me["주식당일"] = me["주식수익"].diff()
+    me["계좌당일"] = me["계좌수익"].diff()
+    me["벤치누적"] = [_bench_on(d) for d in me["날짜"]]
+    me["벤치당일"] = me["벤치누적"].diff()
+
+    def _last(s):
+        v = s.iloc[-1] if len(s) else None
+        return float(v) if v is not None and pd.notna(v) else None
+
+    latest = {}
+    if not idx_cum.empty:
+        moves = _index_day_moves(index_hist)
+        latest["코스피"] = (float(idx_cum["코스피"].iloc[-1]), _last(moves["코스피d"]) if len(moves) else None)
+        latest["코스닥"] = (float(idx_cum["코스닥"].iloc[-1]), _last(moves["코스닥d"]) if len(moves) else None)
+    if not me.empty:
+        latest["주식"] = (_last(me["주식수익"]), _last(me["주식당일"]))
+        latest["계좌"] = (_last(me["계좌수익"]), _last(me["계좌당일"]))
+        latest["벤치"] = (_last(me["벤치누적"]), _last(me["벤치당일"]))
+
+    def _beta(a, b, min_n):
+        if len(b) < min_n or (b ** 2).sum() <= 1e-12:
+            return None
+        return float((a * b).sum() / (b ** 2).sum())
+
+    dbe = me["벤치당일"].values
+
+    def _sens_cols(dser):
+        dm = dser.values
+        all_c, rec_c, tod_c = [None], [None], [None]
+        for i in range(1, len(me)):
+            a, b = dm[1:i + 1], dbe[1:i + 1]
+            ok = ~(pd.isna(a) | pd.isna(b))
+            a, b = a[ok], b[ok]
+            all_c.append(_beta(a, b, 3))
+            rec_c.append(_beta(a[-beta_window:], b[-beta_window:], 3))
+            tod_c.append(_beta(a[-1:], b[-1:], 1))
+        return all_c, rec_c, tod_c
+
+    s_all, s_rec, s_tod = _sens_cols(me["주식수익"].diff())
+    a_all, a_rec, a_tod = _sens_cols(me["계좌수익"].diff())
+    for col, data in (("민감도누적", s_all), ("민감도최근", s_rec), ("민감도당일", s_tod),
+                       ("계좌민감도누적", a_all), ("계좌민감도최근", a_rec), ("계좌민감도당일", a_tod)):
+        me[col] = pd.Series(data, index=me.index, dtype="float64")
+
+    def _tl(x):
+        return x[-1] if len(x) else None
+
+    return {"me": me, "index": idx_cum, "latest": latest,
+            "sensitivity": _tl(s_rec),
+            "sens_all": _tl(s_all), "sens_recent": _tl(s_rec), "sens_today": _tl(s_tod),
+            "acct_sens_all": _tl(a_all), "acct_sens_recent": _tl(a_rec), "acct_sens_today": _tl(a_tod),
+            "sensitivity_basis": "혼합" if wk is not None else "코스피"}
 
 
 # ------------------------------------------------------------------ #

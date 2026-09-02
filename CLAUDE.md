@@ -223,3 +223,34 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   `core.update_sector_cache({"종목명": "섹터"})`로 캐시에 직접 넣고 재계산하면 됨).
 - 매매일지 반영(`ingest_daily.py`) 직후엔 **미분류 종목이 남아있는지 항상 확인**하고, 남아있으면
   new1 캐시에 있는지부터 찾아보고, 없으면 사용자에게 섹터를 물어볼 것.
+
+### 6-4. "지수 대비 계좌" 지표 — 국내주식만 (2026-09-02, new1 §6-17 포팅)
+- **위치**: "거래 기록" 탭, 실현손익 그래프 바로 아래. new1의 §6-17과 UI가 거의 동일 —
+  제목+보유비중 / 4줄 표(코스피·코스닥·내 주식·내 계좌의 누적·당일, 내 주식/계좌는 혼합지수
+  대비 이겼으면 빨강·졌으면 파랑) / 혼합지수 vs 내 주식 당일 한 줄 / 민감도 2줄(내 주식·내 계좌,
+  누적·5일·당일 원점회귀 베타) / 두 그래프(지수대비계좌 ↔ 민감도)를 스와이프 캐러셀.
+- **핵심 차이 — 순수 국내(레드와이어/USD 제외)**:
+  - 앱 상단 "최초자본 10,000,000 대비"는 그대로(RDW 손익 포함).
+  - **분모 D0(t) = 10,000,000 − 그 시점까지 레드와이어 순투입 원화액**(= Σ USD거래 수량×단가×환율,
+    매수 +/매도 −). 지금 RDW 매도가 없어 D0 ≈ 8,422,345.
+  - **내 계좌수익(t) = (국내주식평가(t) + 실제예수금(t)) / D0(t) − 1**. 실제 예수금은 RDW가
+    이미 빠진 값이고 D0에서도 RDW 투입을 뺐으니 RDW는 완전히 상쇄돼 이 지표엔 안 들어옴
+    (국내 미실현+실현 손익만 반영). — 사용자가 명시적으로 이렇게 설계하라고 함.
+  - **내 주식 Rs(t)** = 국내주식(통화=원)만 100% 투자로 환산한 누적수익. flow 계산에 국내
+    거래대금만 씀.
+- **데이터 파일 (전부 git에 커밋 — asset_history.csv와 같은 성격)**:
+  - `index_history.csv` (날짜, KOSPI, KOSDAQ)
+  - `dom_asset_history.csv` (날짜, 국내주식평가) — RDW 제외한 국내주식 원화 평가금액
+  - `stock_market_cache.csv` (종목명, 시장) — 국내종목 KOSPI/KOSDAQ 구분, §1-3 영구 캐시 패턴
+  - 하루치 갱신: `app.py` "시세 새로고침" 핸들러에서 `snapshot_index_history` /
+    `snapshot_dom_asset_history` / `refresh_market_cache` 호출 (별도 cron 없음).
+  - 최초 백필: `python backfill_index_dom_history.py` (재실행 가능, 인자 없음) — 세 파일을
+    통째로 다시 만든다. `fetch_daily_price_history`(네이버 일별시세, KOSPI/KOSDAQ 심볼도 동작)로
+    소급. asset_history.csv에 있는 날짜마다 국내주식평가 한 줄.
+- **함수** (`portfolio_core.py`, new1에서 이식): `load/save/snapshot_index_history`,
+  `load/save/snapshot_dom_asset_history`, `load/update_market_cache`, `fetch_stock_markets`,
+  `refresh_market_cache`, `fetch_daily_price_history`, `_cash_by_date`(전체 거래 재생 → 실제
+  예수금), `_usd_invested_by_date`, `_index_cum_returns`, `_index_day_moves`,
+  `compute_index_vs_account(tx, dom_asset_hist, index_hist, initial, fee_rate_krw, fee_rate_usd,
+  kospi_weight)`. 반환 dict 구조는 new1 §6-17과 동일. meritz엔 pytest가 없어 new1 테스트로
+  로직 검증 후 이식함.

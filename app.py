@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
+import streamlit.components.v1 as components
 
 from portfolio_core import (
     group_sector,
@@ -26,10 +27,17 @@ from portfolio_core import (
     compute_metrics, compute_sector_weights,
     get_holding_trade_summary, get_holding_trade_summary_all_time,
     get_holding_trade_points, get_holding_avg_price_path,
+    load_index_history, snapshot_index_history,
+    load_dom_asset_history, snapshot_dom_asset_history,
+    load_market_cache, refresh_market_cache,
+    compute_index_vs_account, _index_day_moves,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
 DOWN_COLOR = "#2b6cd4"  # 하락/손실 = 파랑
+NEW_COLOR = "#22c55e"   # 초록 — 민감도 그래프 "5일" 선 색
+KOSPI_COLOR = "#f59e0b"   # 지수 대비 계좌 그래프: 코스피 참조선(앰버)
+KOSDAQ_COLOR = "#14b8a6"  # 코스닥 참조선(틸)
 CASH_LABEL = "현금(예수금)"
 
 SECTOR_PALETTE = [
@@ -554,6 +562,13 @@ if refresh_clicked_top or auto_refresh_triggered:
         df_top, stock_val_top, total_assets_top, unreal_top = compute_metrics(holdings, state["cash"], fx_rate)
         snapshot_history(total_assets_top, total_assets_top + unreal_top)
         snapshot_sector_history(compute_sector_weights(df_top))
+        # ---- 지수 대비 계좌(국내주식만) 스냅샷: 지수 종가 + 국내주식 평가금액 + 시장캐시 ----
+        _iq = st.session_state.get("index_quotes") or {}
+        if _iq.get("KOSPI") and _iq.get("KOSDAQ"):
+            snapshot_index_history(_iq["KOSPI"].get("price"), _iq["KOSDAQ"].get("price"))
+        _dom = df_top[df_top["통화"].fillna("원") != "USD"] if "통화" in df_top else df_top
+        snapshot_dom_asset_history(float(pd.to_numeric(_dom["평가금액"], errors="coerce").fillna(0).sum()))
+        refresh_market_cache(holdings[holdings["통화"].fillna("원") != "USD"] if "통화" in holdings else holdings)
     if refresh_report["updated"]:
         st.toast(f"{refresh_report['updated']}개 종목 시세 갱신 완료")
     if refresh_report["unresolved"]:
@@ -1026,6 +1041,244 @@ with tab_tx:
             "scrollZoom": False,
             "doubleClick": False,
         })
+
+    st.divider()
+
+    # ==================================================================== #
+    # 지수 대비 계좌 (국내주식만, 레드와이어/USD 제외) — new1 §6-17 포팅
+    #  · 코스피(노랑)/코스닥(초록) = anchor일 종가 대비 누적등락(0 중심)
+    #  · 내 주식(검정)  = 국내주식 100% 투자로 환산한 누적수익 Rs — 지수와 1:1
+    #  · 내 계좌(점선)  = (국내주식평가 + 실제예수금) / D0 − 1
+    #    D0 = 10,000,000 − 그 시점까지 레드와이어 순투입 원화액
+    # ==================================================================== #
+    idx_hist = load_index_history()
+    dom_hist = load_dom_asset_history()
+
+    mc = load_market_cache()
+    hv = holdings[holdings["통화"].fillna("원") != "USD"].copy() if "통화" in holdings else holdings.copy()
+    hv["_v"] = (pd.to_numeric(hv["수량"], errors="coerce").fillna(0)
+                * pd.to_numeric(hv["현재가"], errors="coerce").fillna(0))
+    hv["_m"] = hv["종목명"].map(mc)
+    ks_val = float(hv.loc[hv["_m"] == "KOSPI", "_v"].sum())
+    kq_val = float(hv.loc[hv["_m"] == "KOSDAQ", "_v"].sum())
+    wk = ks_val / (ks_val + kq_val) if (ks_val + kq_val) > 0 else None
+
+    _wtag = "" if wk is None else (
+        f" <span style='font-size:11px;font-weight:400;color:{T['muted']}'>"
+        f"보유비중 코스피 {wk * 100:.0f}% · 코스닥 {(1 - wk) * 100:.0f}%</span>"
+    )
+    st.markdown(f"##### 지수 대비 계좌 <span style='font-size:12px;color:{T['muted2']}'>(국내주식만)</span>{_wtag}",
+                unsafe_allow_html=True)
+
+    iva = compute_index_vs_account(tx, dom_hist, idx_hist, state["initial"],
+                                    state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
+                                    kospi_weight=wk)
+    me, idxc, latest = iva["me"], iva["index"], iva["latest"]
+
+    if me.empty or idxc.empty:
+        st.info("시세를 새로고침하면 국내 지수·자산 스냅샷이 쌓여서 그래프가 그려집니다.")
+    else:
+        def _pct(v):
+            return "—" if v is None else f"{v * 100:+.2f}%"
+
+        bench = latest.get("벤치") or (None, None)
+
+        def _color_vs_bench(v, ref):
+            if v is None or ref is None:
+                return T["text"]
+            return UP_COLOR if v >= ref else DOWN_COLOR
+
+        def _row(label, dot_color, dashed, key, color_by_bench):
+            cum, day = latest.get(key, (None, None))
+            if color_by_bench:
+                cc, dc = _color_vs_bench(cum, bench[0]), _color_vs_bench(day, bench[1])
+            else:
+                cc = dc = T["muted"]
+            mark = "┈" if dashed else "●"
+            return (
+                f"<tr><td style='color:{dot_color}'>{mark}&nbsp;{label}</td>"
+                f"<td style='text-align:right;color:{cc}'>{_pct(cum)}</td>"
+                f"<td style='text-align:right;color:{dc}'>{_pct(day)}</td></tr>"
+            )
+
+        st.markdown(
+            "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:-2px 0 4px'>"
+            f"<tr style='color:{T['muted2']};font-size:10px'>"
+            "<th style='text-align:left'>&nbsp;</th><th style='text-align:right'>누적</th>"
+            "<th style='text-align:right'>당일</th></tr>"
+            + _row("코스피", KOSPI_COLOR, False, "코스피", False)
+            + _row("코스닥", KOSDAQ_COLOR, False, "코스닥", False)
+            + _row("내 주식", T["text"], False, "주식", True)
+            + _row("내 계좌", T["muted2"], True, "계좌", True)
+            + "</table>",
+            unsafe_allow_html=True,
+        )
+
+        b_cum, b_day = latest.get("벤치", (None, None))
+        my_cum, my_day = latest.get("주식", (None, None))
+
+        def _p(v):
+            return "—" if v is None or pd.isna(v) else f"{v * 100:+.2f}%"
+
+        st.markdown(
+            f"<div style='font-size:11px;color:{T['muted']};margin:0 0 2px'>"
+            f"당일  혼합지수 <b>{_p(b_day)}</b>  /  내 주식 <b>{_p(my_day)}</b>"
+            f"<span style='color:{T['muted2']}'> · 누적 {_p(b_cum)} / {_p(my_cum)}</span></div>",
+            unsafe_allow_html=True,
+        )
+
+        basis = iva["sensitivity_basis"]
+
+        def _s(v):
+            return "—" if v is None else f"{v:+.2f}"
+
+        def _sens_line(label, a, r, t):
+            return (
+                f"<div style='font-size:11px;color:{T['muted']};margin:0 0 3px'>"
+                f"민감도·{label} <span style='color:{T['muted2']}'>({basis})</span>  "
+                f"<b style='color:{T['text']}'>누적 {_s(a)}</b> · "
+                f"<b style='color:{NEW_COLOR}'>5일 {_s(r)}</b> · "
+                f"<b style='color:{UP_COLOR}'>당일 {_s(t)}</b></div>"
+            )
+
+        st.markdown(
+            _sens_line("내 주식", iva["sens_all"], iva["sens_recent"], iva["sens_today"])
+            + _sens_line("내 계좌", iva["acct_sens_all"], iva["acct_sens_recent"], iva["acct_sens_today"]),
+            unsafe_allow_html=True,
+        )
+
+        moves = _index_day_moves(idx_hist).set_index("날짜")
+        kd_map = moves["코스피d"].to_dict()
+        qd_map = moves["코스닥d"].to_dict()
+
+        def _fmt(v):
+            return "—" if v is None or pd.isna(v) else f"{v * 100:+.2f}%"
+
+        def _cell(v, ref):
+            if v is None or pd.isna(v):
+                return "—"
+            s = f"{v * 100:+.2f}%"
+            if ref is None or pd.isna(ref):
+                return s
+            return f"<span style='color:{UP_COLOR if v >= ref else DOWN_COLOR}'>{s}</span>"
+
+        def _ht(label):
+            return ("<b>" + label + "</b>  누적 %{customdata[0]} · 당일 %{customdata[1]}<extra></extra>")
+
+        fig2 = go.Figure()
+        fig2.add_trace(go.Scatter(
+            x=idxc["날짜"], y=idxc["코스피"], name="코스피", mode="lines",
+            line=dict(color=KOSPI_COLOR, width=1.6),
+            customdata=[[_fmt(c), _fmt(kd_map.get(d))] for c, d in zip(idxc["코스피"], idxc["날짜"])],
+            hovertemplate=_ht("코스피"),
+        ))
+        fig2.add_trace(go.Scatter(
+            x=idxc["날짜"], y=idxc["코스닥"], name="코스닥", mode="lines",
+            line=dict(color=KOSDAQ_COLOR, width=1.6),
+            customdata=[[_fmt(c), _fmt(qd_map.get(d))] for c, d in zip(idxc["코스닥"], idxc["날짜"])],
+            hovertemplate=_ht("코스닥"),
+        ))
+        fig2.add_trace(go.Scatter(
+            x=me["날짜"], y=me["주식수익"], name="내 주식", mode="lines+markers",
+            line=dict(color=T["text"], width=2.8), marker=dict(size=5),
+            customdata=[[_cell(cr, br), _cell(dr, bd)] for cr, dr, br, bd
+                        in zip(me["주식수익"], me["주식당일"], me["벤치누적"], me["벤치당일"])],
+            hovertemplate=_ht("내 주식"),
+        ))
+        fig2.add_trace(go.Scatter(
+            x=me["날짜"], y=me["계좌수익"], name="내 계좌", mode="lines",
+            line=dict(color=T["muted2"], width=1.8, dash="dot"),
+            customdata=[[_cell(cr, br), _cell(dr, bd)] for cr, dr, br, bd
+                        in zip(me["계좌수익"], me["계좌당일"], me["벤치누적"], me["벤치당일"])],
+            hovertemplate=_ht("내 계좌"),
+        ))
+        fig2.add_hline(y=0, line_dash="dash", line_color=T["muted2"], line_width=1)
+        fig2.update_layout(
+            height=275, margin=dict(l=40, r=8, t=8, b=30),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color=T["text"], size=11), showlegend=False,
+            hoverlabel=dict(bgcolor=T["card"], bordercolor=T["border"], align="left",
+                            font=dict(size=11, color=T["text"])),
+            xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+            yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=False,
+                       tickfont=dict(size=9, color=T["muted"]), tickformat=".1%", fixedrange=True),
+            hovermode="x unified", dragmode=False,
+        )
+
+        fig_s = go.Figure()
+        for col, nm, color, w in (
+            ("민감도누적", "누적", T["text"], 2.6),
+            ("민감도최근", "5일", NEW_COLOR, 2.0),
+            ("민감도당일", "당일", UP_COLOR, 1.4),
+        ):
+            cd = ["—" if pd.isna(v) else f"{v:+.2f}" for v in me[col]]
+            fig_s.add_trace(go.Scatter(
+                x=me["날짜"], y=me[col], name=nm, mode="lines+markers",
+                line=dict(color=color, width=w), marker=dict(size=4),
+                connectgaps=True, customdata=cd,
+                hovertemplate="<b>" + nm + "</b> 민감도 %{customdata}<extra></extra>",
+            ))
+        fig_s.add_hline(y=0, line_dash="dash", line_color=T["muted2"], line_width=1)
+        fig_s.update_layout(
+            height=275, margin=dict(l=40, r=8, t=8, b=30),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color=T["text"], size=11), showlegend=False,
+            hoverlabel=dict(bgcolor=T["card"], bordercolor=T["border"], align="left",
+                            font=dict(size=11, color=T["text"])),
+            xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+            yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=True,
+                       zerolinecolor=T["muted2"], zerolinewidth=1, range=[-1.6, 1.6], dtick=0.5,
+                       tickfont=dict(size=9, color=T["muted"]), tickformat="+.1f", fixedrange=True,
+                       hoverformat="+.2f"),
+            hovermode="x unified", dragmode=False,
+        )
+
+        cfg = {"displayModeBar": False, "responsive": True, "scrollZoom": False, "doubleClick": False}
+        h1 = fig2.to_html(include_plotlyjs="cdn", full_html=False, config=cfg, default_width="100%")
+        h2 = fig_s.to_html(include_plotlyjs=False, full_html=False, config=cfg, default_width="100%")
+        components.html(
+            f"""
+<div id="cwrap">
+  <div class="track">
+    <div class="slide">{h1}</div>
+    <div class="slide">{h2}</div>
+  </div>
+  <div class="dots"><span class="dot on"></span><span class="dot"></span></div>
+</div>
+<style>
+  body {{ margin:0; background:transparent; }}
+  #cwrap .track {{ display:flex; overflow-x:auto; scroll-snap-type:x mandatory; overscroll-behavior-x:contain;
+    -webkit-overflow-scrolling:touch; scrollbar-width:none; }}
+  #cwrap .track::-webkit-scrollbar {{ display:none; }}
+  #cwrap .slide {{ flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always; }}
+  #cwrap .dots {{ display:flex; justify-content:center; gap:7px; padding:4px 0 0; }}
+  #cwrap .dot {{ width:7px; height:7px; border-radius:50%; background:{T['muted2']};
+    opacity:.3; transition:opacity .18s, background .18s; }}
+  #cwrap .dot.on {{ opacity:1; background:{T['text']}; }}
+</style>
+<script>
+  (function() {{
+    var track = document.querySelector('#cwrap .track');
+    var dots = document.querySelectorAll('#cwrap .dot');
+    function sync() {{
+      var i = Math.round(track.scrollLeft / Math.max(track.clientWidth, 1));
+      dots.forEach(function(d, j) {{ d.classList.toggle('on', j === i); }});
+    }}
+    track.addEventListener('scroll', sync, {{passive: true}});
+    function rz() {{
+      var w = document.querySelector('#cwrap .track').clientWidth;
+      if (!w) return;
+      document.querySelectorAll('#cwrap .plotly-graph-div').forEach(function(g) {{
+        if (window.Plotly) window.Plotly.relayout(g, {{width: w, height: 275}});
+      }});
+    }}
+    window.addEventListener('resize', rz);
+    setTimeout(rz, 50); setTimeout(rz, 250); setTimeout(rz, 700);
+  }})();
+</script>
+""",
+            height=315,
+        )
 
     st.divider()
 
