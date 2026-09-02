@@ -1035,23 +1035,41 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
         latest["계좌"] = (_last(me["계좌수익"]), _last(me["계좌당일"]))
         latest["벤치"] = (_last(me["벤치누적"]), _last(me["벤치당일"]))
 
-    def _beta(a, b, min_n):
-        if len(b) < min_n or (b ** 2).sum() <= 1e-12:
-            return None
-        return float((a * b).sum() / (b ** 2).sum())
-
+    # 민감도 = 방향 일관 점수 (2026-09-02, new1 §6-17과 동일 로직):
+    #  하락장(Δ벤치<0): Δ주식/Δ벤치  ·  상승장(Δ벤치>0)&내주식↑: Δ벤치/Δ주식(뒤집음)
+    #  상승장인데 내주식↓: 상한 3.0  ·  점수 clamp [-1, 3]  ·  누적/5일 = 구간별 점수 중앙값
+    #  1=시장 동일, <1=시장 이김, >1=시장에 짐. 음수는 하락장 한정(역행).
+    SCORE_CAP, SCORE_FLOOR = 3.0, -1.0
     dbe = me["벤치당일"].values
+
+    def _interval_score(dm, db):
+        if pd.isna(dm) or pd.isna(db) or abs(db) < 1e-9:
+            return None
+        if db < 0:
+            s = dm / db
+        elif dm > 0:
+            s = db / dm
+        else:
+            s = SCORE_CAP
+        return min(max(s, SCORE_FLOOR), SCORE_CAP)
+
+    def _median(vals):
+        v = sorted(x for x in vals if x is not None)
+        if not v:
+            return None
+        n = len(v)
+        return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
 
     def _sens_cols(dser):
         dm = dser.values
+        scores = [None] + [_interval_score(dm[i], dbe[i]) for i in range(1, len(me))]
         all_c, rec_c, tod_c = [None], [None], [None]
         for i in range(1, len(me)):
-            a, b = dm[1:i + 1], dbe[1:i + 1]
-            ok = ~(pd.isna(a) | pd.isna(b))
-            a, b = a[ok], b[ok]
-            all_c.append(_beta(a, b, 3))
-            rec_c.append(_beta(a[-beta_window:], b[-beta_window:], 3))
-            tod_c.append(_beta(a[-1:], b[-1:], 1))
+            win = [x for x in scores[1:i + 1] if x is not None]
+            rec = [x for x in scores[max(1, i + 1 - beta_window):i + 1] if x is not None]
+            all_c.append(_median(win) if len(win) >= 3 else None)
+            rec_c.append(_median(rec) if len(rec) >= 3 else None)
+            tod_c.append(scores[i])
         return all_c, rec_c, tod_c
 
     s_all, s_rec, s_tod = _sens_cols(me["주식수익"].diff())

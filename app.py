@@ -1130,7 +1130,7 @@ with tab_tx:
         basis = iva["sensitivity_basis"]
 
         def _s(v):
-            return "—" if v is None else f"{v:+.2f}"
+            return "—" if v is None else f"{v:.2f}"
 
         def _sens_line(label, a, r, t):
             return (
@@ -1211,14 +1211,14 @@ with tab_tx:
             ("민감도최근", "5일", NEW_COLOR, 2.0),
             ("민감도당일", "당일", UP_COLOR, 1.4),
         ):
-            cd = ["—" if pd.isna(v) else f"{v:+.2f}" for v in me[col]]
+            cd = ["—" if pd.isna(v) else f"{v:.2f}" for v in me[col]]
             fig_s.add_trace(go.Scatter(
                 x=me["날짜"], y=me[col], name=nm, mode="lines+markers",
                 line=dict(color=color, width=w), marker=dict(size=4),
                 connectgaps=True, customdata=cd,
                 hovertemplate="<b>" + nm + "</b> 민감도 %{customdata}<extra></extra>",
             ))
-        fig_s.add_hline(y=0, line_dash="dash", line_color=T["muted2"], line_width=1)
+        fig_s.add_hline(y=1, line_dash="dash", line_color=T["muted2"], line_width=1)  # y=1 = 시장 동일
         fig_s.update_layout(
             height=275, margin=dict(l=40, r=8, t=8, b=30),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -1226,10 +1226,10 @@ with tab_tx:
             hoverlabel=dict(bgcolor=T["card"], bordercolor=T["border"], align="left",
                             font=dict(size=11, color=T["text"])),
             xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
-            yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=True,
-                       zerolinecolor=T["muted2"], zerolinewidth=1, range=[-1.6, 1.6], dtick=0.5,
-                       tickfont=dict(size=9, color=T["muted"]), tickformat="+.1f", fixedrange=True,
-                       hoverformat="+.2f"),
+            yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=False,
+                       range=[-1.1, 3.2], dtick=0.5,
+                       tickfont=dict(size=9, color=T["muted"]), tickformat=".1f", fixedrange=True,
+                       hoverformat=".2f"),
             hovermode="x unified", dragmode=False,
         )
 
