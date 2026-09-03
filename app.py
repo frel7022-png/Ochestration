@@ -1108,6 +1108,7 @@ with tab_tx:
             "<th style='text-align:right'>당일</th></tr>"
             + _row("코스피", KOSPI_COLOR, False, "코스피", False)
             + _row("코스닥", KOSDAQ_COLOR, False, "코스닥", False)
+            + _row("혼합지수", DOWN_COLOR, False, "벤치", False)
             + _row("내 주식", T["text"], False, "주식", True)
             + _row("내 계좌", T["muted2"], True, "계좌", True)
             + "</table>",
@@ -1192,6 +1193,22 @@ with tab_tx:
             line=dict(color=KOSDAQ_COLOR, width=1.6),
             customdata=[[_fmt(c), _fmt(qd_map.get(d))] for c, d in zip(idxc["코스닥"], idxc["날짜"])],
             hovertemplate=_ht("코스닥"),
+        ))
+        # 혼합지수 = wk·코스피 + (1−wk)·코스닥 (국내 보유비중 가중). wk 없으면 코스피 단독.
+        _bw = wk if wk is not None else 1.0
+        _blend_cum = [_bw * k + (1 - _bw) * q for k, q in zip(idxc["코스피"], idxc["코스닥"])]
+
+        def _blend_day(d):
+            k, q = kd_map.get(d), qd_map.get(d)
+            if k is None or q is None or pd.isna(k) or pd.isna(q):
+                return None
+            return _bw * k + (1 - _bw) * q
+
+        fig2.add_trace(go.Scatter(
+            x=idxc["날짜"], y=_blend_cum, name="혼합지수", mode="lines",
+            line=dict(color=DOWN_COLOR, width=1.6),
+            customdata=[[_fmt(c), _fmt(_blend_day(d))] for c, d in zip(_blend_cum, idxc["날짜"])],
+            hovertemplate=_ht("혼합지수"),
         ))
         fig2.add_trace(go.Scatter(
             x=me["날짜"], y=me["주식수익"], name="내 주식", mode="lines+markers",
