@@ -11,8 +11,10 @@
        두 번 올려도 중복되지 않게 하기 위함).
     3. transactions.csv 전체를 처음부터 재생(replay)해서 holdings/현금/실현손익을
        다시 계산하고, portfolio_data.csv / transactions.csv / account_state.csv에 저장한다.
-    4. 자산/섹터 스냅샷을 그 날짜 기준으로 남긴다 (거래 캘린더/자산추이 그래프용).
-    5. 결과 요약(보유종목 수, 총자산, 현금 등)을 출력한다 — 이 값을 실제
+    4. 신규 종목의 종목코드를 네이버로 조회해 채운다(시세는 안 받음).
+    5. 자산/섹터 + 지수(index_history)/국내주식평가(dom_asset_history) 스냅샷을 그 날짜
+       기준으로 남긴다 (거래 캘린더/자산추이/"지수 대비 계좌" 그래프용). §6-4 참고.
+    6. 결과 요약(보유종목 수, 총자산, 현금 등)을 출력한다 — 이 값을 실제
        메리츠 앱 화면과 대조해서 반영이 정확한지 확인할 것.
 
 주의 — 이 스크립트는 국내(KRW) 매매일지 전용이다:
@@ -25,6 +27,8 @@
 """
 
 import sys
+
+import pandas as pd
 
 import portfolio_core as core
 
@@ -63,6 +67,24 @@ def main():
         state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
         prior_holdings=prior_holdings)
 
+    # 신규 종목은 종목코드가 비어 있을 수 있음 — 네이버로 가볍게 조회해 채운다(시세는 안 받음,
+    # 시세/등락률 보충은 §3-1대로 세션이 refresh_all_prices로 따로). 코드가 있어야 아래
+    # dom_asset_history / 시장캐시가 그 종목을 잡는다.
+    # 빈 값만 (레드와이어의 "RDW" 같은 미국 티커는 6자리가 아니어도 정상 코드라 건드리지 않음)
+    missing_code = holdings2[holdings2["종목코드"].astype(str).str.strip().isin(["", "nan", "None"])]
+    if not missing_code.empty:
+        code_cache = core.load_code_cache()
+        resolved = {}
+        for nm in missing_code["종목명"].tolist():
+            c = core.resolve_code(nm, code_cache)
+            if c:
+                resolved[nm] = c
+                holdings2.loc[holdings2["종목명"] == nm, "종목코드"] = c
+        if resolved:
+            core.update_code_cache(resolved)
+            core.save_holdings(holdings2)
+            print("[코드보충] " + ", ".join(f"{n}={c}" for n, c in resolved.items()))
+
     core.save_transactions(tx2)
     core.save_holdings(holdings2)
     core.save_state(state2)
@@ -71,6 +93,21 @@ def main():
     df, stock_val, total_assets, unrealized_loss = core.compute_metrics(holdings2, state2["cash"], fx_rate)
     core.snapshot_history(total_assets, total_assets + unrealized_loss, on_date=trade_date)
     core.snapshot_sector_history(core.compute_sector_weights(df), on_date=trade_date)
+
+    # "지수 대비 계좌"(§6-4) 스냅샷 3종 — app.py 새로고침 핸들러와 같은 것. 실패해도(네트워크)
+    # 매매일지 반영은 성공 처리하고 경고만. 시세는 carried price라 세션의 refresh_all_prices
+    # 뒤에 한 번 더 스냅샷하면 그날치가 최신값으로 덮어써짐.
+    try:
+        q = core.fetch_index_quotes() or {}
+        if q.get("KOSPI") and q.get("KOSDAQ"):
+            core.snapshot_index_history(q["KOSPI"].get("price"), q["KOSDAQ"].get("price"), on_date=trade_date)
+        _dom = df[df["통화"].fillna("원") != "USD"] if "통화" in df else df
+        core.snapshot_dom_asset_history(
+            float(pd.to_numeric(_dom["평가금액"], errors="coerce").fillna(0).sum()), on_date=trade_date)
+        core.refresh_market_cache(
+            holdings2[holdings2["통화"].fillna("원") != "USD"] if "통화" in holdings2 else holdings2)
+    except Exception as e:
+        print(f"[경고] 지수/국내평가 스냅샷 실패(매매일지 반영은 정상): {e}")
 
     print(f"[완료] {trade_date} 매매일지 반영: 신규 거래 {n_new}건"
           + (f" (기존 {n_replaced}건 교체)" if n_replaced else ""))
