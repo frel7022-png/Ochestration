@@ -27,7 +27,7 @@ from portfolio_core import (
     compute_metrics, compute_sector_weights,
     get_holding_trade_summary, get_holding_trade_summary_all_time,
     get_holding_trade_points, get_holding_avg_price_path,
-    load_index_history, snapshot_index_history,
+    load_index_history, snapshot_index_history, append_capture_anomalies,
     load_dom_asset_history, snapshot_dom_asset_history,
     load_market_cache, refresh_market_cache,
     load_bigcap_history, synthetic_kospi_ex_bigcap,
@@ -566,6 +566,14 @@ if refresh_clicked_top or auto_refresh_triggered:
         snapshot_dom_asset_history(float(pd.to_numeric(_dom["평가금액"], errors="coerce").fillna(0).sum()))
         refresh_market_cache(holdings[holdings["통화"].fillna("원") != "USD"] if "통화" in holdings else holdings)
         snapshot_bigcap_history(fetch_bigcap_quotes())  # 삼성전자/삼성전자우/SK하이닉스 종가 (SamHynix extracted)
+        # §6-17 국면막대: 시장 사실상 무변동인 날(|벤치당일|<0.001) → report/capture_anomalies.csv 누적 기록.
+        try:
+            _iva_a = compute_index_vs_account(tx, load_dom_asset_history(), load_index_history(),
+                                              state["initial"], state.get("fee_rate_krw", 0.0),
+                                              state.get("fee_rate_usd", 0.0))
+            append_capture_anomalies(_iva_a.get("cap_anomalies", []))
+        except Exception:
+            pass
     if refresh_report["updated"]:
         st.toast(f"{refresh_report['updated']}개 종목 시세 갱신 완료")
     if refresh_report["unresolved"]:
@@ -1066,7 +1074,7 @@ with tab_tx:
         f"보유비중 코스피 {wk * 100:.0f}% · 코스닥 {(1 - wk) * 100:.0f}%</span>"
     )
     def _render_iva_panel(iva, idx_hist_local, kospi_label, carousel_id):
-        """'지수 대비 계좌'(국내만) 한 벌 — 5줄 표 + RP 2줄 + 스와이프 캐러셀. 메인(코스피)과
+        """'지수 대비 계좌'(국내만) 한 벌 — 5줄 표 + CR(국면막대) 2줄 + 스와이프 캐러셀. 메인(코스피)과
         'SamHYnix extracted'(코스피 다리 = 삼성·하이닉스 제외)가 이 렌더러를 공유한다."""
         me, idxc, latest = iva["me"], iva["index"], iva["latest"]
         if me.empty or idxc.empty:
@@ -1146,38 +1154,42 @@ with tab_tx:
             unsafe_allow_html=True,
         )
 
+        # ---- 국면별 민감도 막대 요약 (2026-09-04, RP 대체 — new1 §6-17과 동일) ----
+        # 하루마다 막대 하나. 시장이 내린 날엔 "얼마나 안 따라 빠졌나(방어)", 오른 날엔 "얼마나
+        # 따라 올랐나(참여)". 둘 다 1 = 시장과 똑같이, 높을수록 좋음.
+        #   하락일 막대 = 1 − 내당일/벤치당일,   상승일 막대 = 내당일/벤치당일
+        # 하락장/상승장 = 각 국면 막대 평균. CR = 상승장 ÷ 하락장 (1=대칭 "똔똔", >1=우호적).
+        # 5일 = 최근 5구간 막대 평균.
         basis = iva["sensitivity_basis"]
 
         def _s(v):
-            return "—" if v is None else f"{v:+.2f}"
+            return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else f"{v:+.2f}"
 
-        def _sens_line(label, a, r, t, t_exc):
-            # 당일 RP 뒤 (%p) = 그날 혼합지수 대비 초과 수익(Δ내 당일 − Δ벤치 당일). RP의 분자에
-            # 해당하는 raw 값 — "시장보다 몇 %p 더/덜 했나". 실제 당일 수익률 자체는 위 표에 이미
-            # 있으니 여기선 상대치를 보여줌. 누적/5일은 구간별 median이라 단일 %p가 안 나와서 안 붙임.
-            pct = "" if t is None or t_exc is None or pd.isna(t_exc) else \
-                f" <span style='color:{T['muted2']};font-weight:400'>({t_exc * 100:+.2f}%p)</span>"
+        def _cr(v):
+            return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else f"{v:.2f}"
+
+        _last_regime = str(me["국면"].iloc[-1]) if ("국면" in me and len(me)) else ""
+        _today_word = "방어" if _last_regime == "하락" else "참여" if _last_regime == "상승" else "당일"
+
+        # 색은 아래 막대 그래프와 맞춤 — 하락장 = 빨강(UP_COLOR), 상승장 = 파랑(DOWN_COLOR).
+        def _cap_line(label, today, down, up, cr, d5):
             return (
                 f"<div style='font-size:11px;color:{T['muted']};margin:0 0 3px'>"
-                f"RP·{label} <span style='color:{T['muted2']}'>({basis})</span>  "
-                f"<b style='color:{T['text']}'>누적 {_s(a)}</b> · "
-                f"<b style='color:{NEW_COLOR}'>5일 {_s(r)}</b> · "
-                f"<b style='color:{UP_COLOR}'>당일 {_s(t)}</b>{pct}</div>"
+                f"CR·{label} <span style='color:{T['muted2']}'>({basis})</span>  "
+                f"<b style='color:{T['text']}'>오늘 {_today_word} {_s(today)}</b> · "
+                f"<b style='color:{UP_COLOR}'>하락장 {_s(down)}</b> · "
+                f"<b style='color:{DOWN_COLOR}'>상승장 {_s(up)}</b> · "
+                f"<b style='color:{T['text']}'>CR {_cr(cr)}</b>"
+                f" <span style='color:{T['muted2']};font-weight:400'>· 5일 {_s(d5)}</span></div>"
             )
-
-        _bench_day = latest.get("벤치", (None, None))[1]
-
-        def _excess(key):
-            v = latest.get(key, (None, None))[1]
-            if v is None or _bench_day is None or pd.isna(v) or pd.isna(_bench_day):
-                return None
-            return v - _bench_day
 
         st.markdown(
             "<div style='font-size:10px;color:" + T["muted2"] + ";margin:2px 0 1px'>"
-            "RP (relative performance) — 0=시장과 동일, 양수=시장보다 잘함</div>"
-            + _sens_line("내 주식", iva["sens_all"], iva["sens_recent"], iva["sens_today"], _excess("주식"))
-            + _sens_line("내 계좌", iva["acct_sens_all"], iva["acct_sens_recent"], iva["acct_sens_today"], _excess("계좌")),
+            "CR (capture ratio) — 1 = 시장과 동일 · 하락장·상승장 모두 높을수록 좋음 · CR&gt;1 = 상승참여 &gt; 하락방어</div>"
+            + _cap_line("내 주식", iva["cap_today"], iva["cap_down"], iva["cap_up"],
+                        iva["cap_cr"], iva["cap_5d"])
+            + _cap_line("내 계좌", iva["acct_cap_today"], iva["acct_cap_down"], iva["acct_cap_up"],
+                        iva["acct_cap_cr"], iva["acct_cap_5d"]),
             unsafe_allow_html=True,
         )
 
@@ -1255,31 +1267,32 @@ with tab_tx:
             hovermode="x unified", dragmode=False,
         )
 
+        # ---- 국면별 민감도 막대 그래프 (RP 그래프 대체, 2026-09-04 — new1 §6-17과 동일) ----
+        # 하루 = 막대 하나. 시장이 내린 날 = 빨강 막대(그날 "방어" = 1 − 내당일/벤치당일),
+        # 오른 날 = 파랑 막대(그날 "참여" = 내당일/벤치당일). 기준선 y=1 = 시장과 똑같이 움직임.
+        # 위로 갈수록 잘한 것. 누적/5일 선 없앰.
+        _cap_bars = me["국면막대주식"] if "국면막대주식" in me else pd.Series([None] * len(me), index=me.index)
+        _reg = me["국면"] if "국면" in me else pd.Series([""] * len(me), index=me.index)
+        _bar_colors = [UP_COLOR if r == "하락" else DOWN_COLOR if r == "상승" else T["muted2"] for r in _reg]
+        _bar_cd = [("하락장" if r == "하락" else "상승장" if r == "상승" else "—",
+                    "—" if pd.isna(v) else f"{v:+.2f}") for v, r in zip(_cap_bars, _reg)]
         fig_s = go.Figure()
-        for col, nm, color, w in (
-            ("상대성과누적", "누적", T["text"], 2.6),
-            ("상대성과최근", "5일", NEW_COLOR, 2.0),
-            ("상대성과당일", "당일", UP_COLOR, 1.4),
-        ):
-            cd = ["—" if pd.isna(v) else f"{v:+.2f}" for v in me[col]]
-            fig_s.add_trace(go.Scatter(
-                x=me["날짜"], y=me[col], name=nm, mode="lines+markers",
-                line=dict(color=color, width=w), marker=dict(size=4),
-                connectgaps=True, customdata=cd,
-                hovertemplate="<b>" + nm + "</b> RP %{customdata}<extra></extra>",
-            ))
-        fig_s.add_hline(y=0, line_dash="dash", line_color=T["muted2"], line_width=1)  # y=0 = 시장 동일
+        fig_s.add_trace(go.Bar(
+            x=me["날짜"], y=_cap_bars, marker_color=_bar_colors, marker_line_width=0,
+            customdata=_bar_cd,
+            hovertemplate="<b>%{customdata[0]}</b> 민감도막대 %{customdata[1]}<extra></extra>",
+        ))
+        fig_s.add_hline(y=1, line_dash="dash", line_color=T["muted2"], line_width=1)  # y=1 = 시장과 동일
         fig_s.update_layout(
             height=275, margin=dict(l=40, r=8, t=8, b=30),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-            font=dict(color=T["text"], size=11), showlegend=False,
+            font=dict(color=T["text"], size=11), showlegend=False, bargap=0.3,
             hoverlabel=dict(bgcolor=T["card"], bordercolor=T["border"], align="left",
                             font=dict(size=11, color=T["text"])),
             xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
-            yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=False,
-                       range=[-3.2, 3.2], dtick=1.0,
-                       tickfont=dict(size=9, color=T["muted"]), tickformat="+.0f", fixedrange=True,
-                       hoverformat="+.2f"),
+            yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=True, zerolinecolor=T["border"],
+                       range=[-2.0, 3.0], dtick=1.0,
+                       tickfont=dict(size=9, color=T["muted"]), tickformat="+.0f", fixedrange=True),
             hovermode="x unified", dragmode=False,
         )
 

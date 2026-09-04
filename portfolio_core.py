@@ -760,6 +760,30 @@ def snapshot_index_history(kospi: float, kosdaq: float, on_date: str | None = No
     save_index_history(hist.sort_values("날짜"))
 
 
+CAPTURE_ANOMALY_FILE = HERE / "report" / "capture_anomalies.csv"
+
+
+def append_capture_anomalies(anomalies: list[dict]) -> None:
+    """국면막대(§6-17)에서 |벤치당일| < 0.001이라 막대를 못 만든 날을
+    report/capture_anomalies.csv에 누적 기록한다(매 렌더링 아님, 새로고침 핸들러에서만).
+    월단위로 모아 분기 해석하고 필요하면 그 날의 CR을 후보에서 제외. 같은 날짜는 무시."""
+    if not anomalies:
+        return
+    rows = [{"날짜": a.get("날짜", ""), "벤치당일": a.get("벤치당일"), "내당일": a.get("내당일"),
+             "사유": "|벤치당일| < 0.001 (시장 무변동)"} for a in anomalies]
+    new = pd.DataFrame(rows, columns=["날짜", "벤치당일", "내당일", "사유"])
+    CAPTURE_ANOMALY_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if CAPTURE_ANOMALY_FILE.exists():
+        old = pd.read_csv(CAPTURE_ANOMALY_FILE)
+        new = new[~new["날짜"].isin(old["날짜"].astype(str))]
+        if new.empty:
+            return
+        out = pd.concat([old, new], ignore_index=True)
+    else:
+        out = new
+    out.sort_values("날짜").to_csv(CAPTURE_ANOMALY_FILE, index=False)
+
+
 def load_dom_asset_history() -> pd.DataFrame:
     if DOM_ASSET_HISTORY_FILE.exists():
         return pd.read_csv(DOM_ASSET_HISTORY_FILE)
@@ -1057,12 +1081,14 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
     - 내 주식 Rs(t) = 국내주식평가 구간변화에서 그 구간 국내 순매수대금을 뺀 순수 가격변동을
       복리로 누적 → 지수와 1:1 비교 가능.
     - 코스피/코스닥 = anchor일 종가 대비 누적등락(0 중심).
-    반환 dict 구조는 new1 §6-17과 동일(me/index/latest/sens_*/acct_sens_*/sensitivity_basis)."""
+    반환 dict 구조는 new1 §6-17과 동일(me/index/latest/cap_*/acct_cap_*/cap_anomalies/
+    sensitivity_basis). me에 국면막대주식/국면막대계좌/국면 컬럼."""
     empty = {"me": pd.DataFrame(columns=["날짜", "계좌수익", "주식수익"]),
              "index": pd.DataFrame(columns=["날짜", "코스피", "코스닥"]),
-             "latest": {}, "sensitivity": None,
-             "sens_all": None, "sens_recent": None, "sens_today": None,
-             "acct_sens_all": None, "acct_sens_recent": None, "acct_sens_today": None,
+             "latest": {},
+             "cap_today": None, "cap_down": None, "cap_up": None, "cap_cr": None, "cap_5d": None,
+             "acct_cap_today": None, "acct_cap_down": None, "acct_cap_up": None,
+             "acct_cap_cr": None, "acct_cap_5d": None, "cap_anomalies": [],
              "sensitivity_basis": "혼합" if kospi_weight is not None else "코스피"}
     if dom_asset_hist is None or dom_asset_hist.empty or index_hist is None or index_hist.empty:
         return empty
@@ -1133,46 +1159,56 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
         latest["계좌"] = (_last(me["계좌수익"]), _last(me["계좌당일"]))
         latest["벤치"] = (_last(me["벤치누적"]), _last(me["벤치당일"]))
 
-    # RP(창) = (내 창-누적수익 − 벤치 창-누적수익) / |벤치 창-누적수익| (2026-09-04, new1 §6-17과 동일).
-    #  당일 = 최근 1구간 / 5일 = 최근 beta_window구간(복리 누적) / 누적 = 앵커부터. 셋 다 같은 식을
-    #  다른 지평에서 본 것. 예전엔 당일 점수를 median 낸 게 5일·누적이었는데 비율은 평균이 안 되므로
-    #  (평균(aᵢ/bᵢ) ≠ Σaᵢ/Σbᵢ) 창 누적수익으로 직접 계산. 벤치 창-누적이 ±GUARD보다 작으면 None.
-    CLAMP = 3.0
-    GUARD = 0.003
-    _bc = me["벤치누적"].values
+    # ---- 국면별 민감도 막대 (2026-09-04, RP 대체 — new1 §6-17과 동일) ----
+    # 하루(스냅샷 구간)마다 막대 하나. 그날 시장이 내렸으면(빨강) "얼마나 안 따라 빠졌나(방어)",
+    # 올랐으면(파랑) "얼마나 따라 올랐나(참여)".
+    #   하락일 막대 = 1 − 내당일/벤치당일   (1 = 하나도 안 잃음, 0 = 시장만큼, 2 = 잃은 만큼 벎)
+    #   상승일 막대 = 내당일/벤치당일       (1 = 시장만큼 벎, 0 = 하나도 못 벎, >1 = 더 벎)
+    # 둘 다 높을수록 좋음. |벤치당일| < EPS면 시장이 사실상 안 움직인 날이라 막대 없음 + 이상치 로그.
+    # 요약: 하락장 = 하락일 막대 평균, 상승장 = 상승일 막대 평균, CR = 상승장/하락장(1=대칭, >1=우호적),
+    #   5일 = 최근 beta_window일 막대 평균. (예전 RP = (Δ내−Δ벤치)/|Δ벤치| — "0=시장동일"이
+    #   국면따라 좋/나쁨이 뒤집혀 폐기.)
+    EPS = 0.001
+    _bd = me["벤치당일"].values           # 스냅샷 구간별 벤치 변화(소수), index 0 = NaN
 
-    def _rp_cols(mine_cum):
-        """각 창에서 벤치·내 누적수익의 변화를 먼저 구한 뒤 한 번 나눈다(비율의 평균이 아님)."""
+    def _cap_cols(mine_day):
+        """내 당일수익 시계열 → (일자별 막대 리스트, 하락장평균, 상승장평균, CR, 5일평균, 이상치)."""
         n = len(me)
-        all_c = [None] * n
-        rec_c = [None] * n
-        tod_c = [None] * n
+        bars = [None] * n
+        anomalies = []
         for i in range(1, n):
-            for out, j, need in ((all_c, 0, 3),
-                                  (rec_c, max(0, i - beta_window), 3),
-                                  (tod_c, i - 1, 1)):
-                if i - j < need:
-                    continue
-                b = _bc[i] - _bc[j]
-                m = mine_cum[i] if j == 0 else mine_cum[i] - mine_cum[j]
-                if pd.isna(b) or pd.isna(m) or abs(b) < GUARD:
-                    continue
-                out[i] = min(max((m - b) / abs(b), -CLAMP), CLAMP)
-        return all_c, rec_c, tod_c
+            b, m = _bd[i], mine_day[i]
+            if pd.isna(b) or pd.isna(m):
+                continue
+            if abs(b) < EPS:
+                anomalies.append({"날짜": str(me["날짜"].iloc[i]),
+                                  "벤치당일": round(float(b), 6), "내당일": round(float(m), 6)})
+                continue
+            bars[i] = (1.0 - m / b) if b < 0 else (m / b)
+        idxvals = [(i, bars[i]) for i in range(n) if bars[i] is not None]
+        down = [v for i, v in idxvals if _bd[i] < 0]
+        up = [v for i, v in idxvals if _bd[i] > 0]
+        d_avg = (sum(down) / len(down)) if down else None
+        u_avg = (sum(up) / len(up)) if up else None
+        cr = (u_avg / d_avg) if (u_avg is not None and d_avg is not None and abs(d_avg) > 1e-6) else None
+        last = [v for _, v in idxvals][-beta_window:]
+        avg5 = (sum(last) / len(last)) if last else None
+        return bars, d_avg, u_avg, cr, avg5, anomalies
 
-    s_all, s_rec, s_tod = _rp_cols(me["주식수익"].values)
-    a_all, a_rec, a_tod = _rp_cols(me["계좌수익"].values)
-    for col, data in (("상대성과누적", s_all), ("상대성과최근", s_rec), ("상대성과당일", s_tod),
-                       ("계좌상대성과누적", a_all), ("계좌상대성과최근", a_rec), ("계좌상대성과당일", a_tod)):
-        me[col] = pd.Series(data, index=me.index, dtype="float64")
+    s_bars, s_down, s_up, s_cr, s_5d, s_anom = _cap_cols(me["주식당일"].values)   # 내 주식(Rs)
+    a_bars, a_down, a_up, a_cr, a_5d, _ = _cap_cols(me["계좌당일"].values)        # 내 계좌(예수금 포함)
 
-    def _tl(x):
-        return x[-1] if len(x) else None
+    me["국면막대주식"] = pd.Series(s_bars, index=me.index, dtype="float64")
+    me["국면막대계좌"] = pd.Series(a_bars, index=me.index, dtype="float64")
+    me["국면"] = pd.Series(["하락" if (not pd.isna(x) and x < 0) else "상승" if (not pd.isna(x) and x > 0) else ""
+                             for x in _bd], index=me.index)
 
     return {"me": me, "index": idx_cum, "latest": latest,
-            "sensitivity": _tl(s_rec),
-            "sens_all": _tl(s_all), "sens_recent": _tl(s_rec), "sens_today": _tl(s_tod),
-            "acct_sens_all": _tl(a_all), "acct_sens_recent": _tl(a_rec), "acct_sens_today": _tl(a_tod),
+            "cap_today": s_bars[-1] if s_bars else None, "cap_down": s_down, "cap_up": s_up,
+            "cap_cr": s_cr, "cap_5d": s_5d,
+            "acct_cap_today": a_bars[-1] if a_bars else None, "acct_cap_down": a_down,
+            "acct_cap_up": a_up, "acct_cap_cr": a_cr, "acct_cap_5d": a_5d,
+            "cap_anomalies": s_anom,
             "sensitivity_basis": "혼합" if wk is not None else "코스피"}
 
 
