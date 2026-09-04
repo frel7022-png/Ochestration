@@ -781,6 +781,104 @@ def snapshot_dom_asset_history(dom_stock_value_krw: float, on_date: str | None =
     save_dom_asset_history(hist.sort_values("날짜"))
 
 
+# ------------------------------------------------------------------ #
+# "SamHynix extracted" (new1 §6-19 포팅) — 코스피 지수에서 대형 반도체(삼성전자/삼성전자우/
+# SK하이닉스)를 덜어낸 합성 지수. 이 3종목이 코스피 시총 절반 안팎(2026-09-04 ~52%).
+# 혼합지수(국내)의 코스피 다리를 이 합성 지수로 갈아끼워 반도체 안 담는 포트폴리오를
+# 더 공정하게 비교.
+# ------------------------------------------------------------------ #
+BIGCAP_HISTORY_FILE = HERE / "bigcap_history.csv"  # 날짜, 삼성전자, 삼성전자우, SK하이닉스 (종가)
+BIGCAP_CODES = {"삼성전자": "005930", "삼성전자우": "005935", "SK하이닉스": "000660"}
+# wᵢ(t) = sharesᵢ · closeᵢ(t) / TOTAL(t), TOTAL(t) = TOTAL0 · KOSPI(t)/KOSPI0.
+# 상장주식수/TOTAL0(ETF·ETN 제외 추정)는 분기에 한 번 갱신 권장. 스냅샷: 2026-09-04.
+_BIGCAP_SHARES = {"삼성전자": 5_846_279_000, "삼성전자우": 802_000_000, "SK하이닉스": 730_300_000}
+_KOSPI_MKTCAP_ANCHOR = (6645.0, 5.40e15)  # (KOSPI 지수레벨, 지수 시가총액 원)
+
+
+def load_bigcap_history() -> pd.DataFrame:
+    if BIGCAP_HISTORY_FILE.exists():
+        return pd.read_csv(BIGCAP_HISTORY_FILE)
+    return pd.DataFrame(columns=["날짜"] + list(BIGCAP_CODES))
+
+
+def save_bigcap_history(df: pd.DataFrame) -> None:
+    df.to_csv(BIGCAP_HISTORY_FILE, index=False)
+
+
+def snapshot_bigcap_history(prices: dict, on_date: str | None = None) -> None:
+    """대형 반도체 3종목 종가 스냅샷(같은 날짜 덮어씀). prices: {"삼성전자": 종가, ...}."""
+    prices = {k: float(v) for k, v in (prices or {}).items()
+              if k in BIGCAP_CODES and v and float(v) > 0}
+    if not prices:
+        return
+    d = on_date or today_kst_str()
+    hist = load_bigcap_history()
+    hist = hist[hist["날짜"] != d]
+    row = {"날짜": d}
+    row.update({k: prices.get(k) for k in BIGCAP_CODES})
+    hist = pd.concat([hist, pd.DataFrame([row])]).sort_values("날짜")
+    save_bigcap_history(hist)
+
+
+def fetch_bigcap_quotes() -> dict:
+    """{"삼성전자": 종가, "삼성전자우": 종가, "SK하이닉스": 종가}. fetch_quotes 재사용."""
+    q, _ = fetch_quotes(list(BIGCAP_CODES.values()))
+    out = {}
+    for nm, code in BIGCAP_CODES.items():
+        p = (q.get(code) or {}).get("price")
+        if p:
+            out[nm] = float(p)
+    return out
+
+
+def synthetic_kospi_ex_bigcap(index_hist: pd.DataFrame, bigcap_hist: pd.DataFrame) -> pd.DataFrame:
+    """index_hist의 KOSPI 열을 '삼성전자·삼성전자우·SK하이닉스를 덜어낸 코스피' 합성 레벨로
+    바꾼 사본. compute_index_vs_account에 그대로 넘기면 코스피 다리·혼합지수·RP가 전부
+    '반도체 제외'로 계산된다. 첫날 레벨 = 원본 KOSPI 첫날 값. bigcap_hist 비면 원본 그대로."""
+    if index_hist is None or index_hist.empty or "KOSPI" not in index_hist:
+        return index_hist
+    h = index_hist.copy().sort_values("날짜").reset_index(drop=True)
+    if bigcap_hist is None or bigcap_hist.empty:
+        return h
+
+    def _n(x):
+        try:
+            v = float(x)
+            return v if v > 0 else None
+        except (TypeError, ValueError):
+            return None
+
+    names = list(BIGCAP_CODES)
+    bg_by_date = {r["날짜"]: {n: _n(r.get(n)) for n in names}
+                  for _, r in bigcap_hist.sort_values("날짜").iterrows()}
+    k0_lvl, total0 = _KOSPI_MKTCAP_ANCHOR
+    kospi = pd.to_numeric(h["KOSPI"], errors="coerce").tolist()
+    dates = h["날짜"].tolist()
+
+    ex_level = [kospi[0] if kospi else None] + [None] * (len(h) - 1)
+    prev_closes = bg_by_date.get(dates[0])
+    for i in range(1, len(h)):
+        r_k = (kospi[i] / kospi[i - 1] - 1.0) if (kospi[i - 1] and kospi[i]) else 0.0
+        cur = bg_by_date.get(dates[i])
+        if (cur and prev_closes and kospi[i]
+                and all(cur.get(n) for n in names) and all(prev_closes.get(n) for n in names)):
+            total_t = total0 * (kospi[i] / k0_lvl)
+            w_sum, wr_sum = 0.0, 0.0
+            for n in names:
+                wi = _BIGCAP_SHARES[n] * cur[n] / total_t
+                ri = cur[n] / prev_closes[n] - 1.0
+                w_sum += wi
+                wr_sum += wi * ri
+            r_ex = (r_k - wr_sum) / (1.0 - w_sum) if w_sum < 0.999 else r_k
+        else:
+            r_ex = r_k
+        ex_level[i] = ex_level[i - 1] * (1.0 + r_ex)
+        if cur and all(cur.get(n) for n in names):
+            prev_closes = cur
+    h["KOSPI"] = ex_level
+    return h
+
+
 def load_market_cache() -> dict:
     """종목명 → "KOSPI" | "KOSDAQ" 영구 캐시(stock_code_cache.csv와 같은 패턴)."""
     if MARKET_CACHE_FILE.exists():

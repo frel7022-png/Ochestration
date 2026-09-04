@@ -30,6 +30,8 @@ from portfolio_core import (
     load_index_history, snapshot_index_history,
     load_dom_asset_history, snapshot_dom_asset_history,
     load_market_cache, refresh_market_cache,
+    load_bigcap_history, synthetic_kospi_ex_bigcap,
+    snapshot_bigcap_history, fetch_bigcap_quotes,
     compute_index_vs_account, _index_day_moves,
 )
 
@@ -112,7 +114,7 @@ st.markdown(f"""
     .trade-chip {{ font-size:12px; background:{T['bg']}; border:1px solid {T['border']}; border-radius:99px; padding:2px 9px; color:{T['text']}; }}
     .trade-chip b {{ font-weight:600; }}
 
-    .legend-wrap {{ display:flex; flex-wrap:wrap; gap:7px 14px; margin-top:10px; justify-content:center; }}
+    .legend-wrap {{ display:flex; flex-wrap:wrap; gap:7px 14px; margin-top:10px; margin-bottom:20px; justify-content:center; }}
     .legend-item {{ display:flex; align-items:center; gap:5px; font-size:12px; color:{T['text']}; }}
     .legend-dot {{ width:8px; height:8px; border-radius:99px; flex-shrink:0; }}
     .legend-pct {{ color:{T['muted']}; font-family: ui-monospace, monospace; }}
@@ -137,6 +139,8 @@ st.markdown(f"""
 
 
     .stock-card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:12px; padding:10px 16px; margin-bottom:7px; }}
+    /* 물타기(현재 사이클 매수 2회+) 했는데 반등해서 현재가가 최초진입가 이상으로 온 종목 */
+    .stock-card.watered-ok {{ background:rgba(34,197,94,0.11) !important; border-color:rgba(34,197,94,0.38) !important; }}
     .stock-top {{ display:flex; justify-content:space-between; align-items:baseline; }}
     .stock-title-group {{ flex:1 1 auto; min-width:0; max-width:calc(100% - 180px); }}
     .stock-name {{ font-size:13px; font-weight:700; color:{T['text']}; white-space:nowrap; }}
@@ -153,29 +157,22 @@ st.markdown(f"""
         letter-spacing:0.3px; flex-basis:100%;
     }}
 
-    /* 보유종목 카드 우측상단 "WATERING" 칩(=매수/매도 내역·물타기 그래프 토글) — new1의
-       동일 CSS를 그대로 포팅함(2026-08-28). */
+    /* WATERING 토글 — 텍스트 칩이 너무 꽉 차 보여서 점 하나로 축소(2026-09-04, new1 동일).
+       안 눌림=회색 점, 눌림=녹색 점. */
     [class*="st-key-holding_wrap_"] {{ position:relative; }}
     [class*="st-key-watering_"] {{
-        position:absolute; top:11px; right:108px; z-index:5; width:auto !important;
+        position:absolute; top:8px; right:112px; z-index:5; width:auto !important;
     }}
     [class*="st-key-watering_"] button {{
-        padding:2px 7px !important; min-height:0 !important;
-        height:auto !important; border-radius:5px !important;
-        line-height:1.4 !important; border:none !important;
-        box-shadow:none !important;
+        background:transparent !important; border:none !important; box-shadow:none !important;
+        padding:2px 4px !important; min-height:0 !important; height:auto !important;
+        line-height:1 !important;
     }}
     [class*="st-key-watering_"] button p {{
-        font-size:10.5px !important; font-weight:400 !important; line-height:1.4 !important;
+        font-size:15px !important; font-weight:400 !important; line-height:1 !important;
     }}
-    [class*="st-key-watering_"] button[kind="secondary"] {{
-        background:{T['muted']}22 !important; color:{T['text']} !important;
-    }}
-    [class*="st-key-watering_"] button[kind="secondary"] p {{ color:{T['text']} !important; }}
-    [class*="st-key-watering_"] button[kind="primary"] {{
-        background:{T['muted']} !important; color:#fff !important;
-    }}
-    [class*="st-key-watering_"] button[kind="primary"] p {{ color:#fff !important; }}
+    [class*="st-key-watering_"] button[kind="secondary"] p {{ color:{T['muted2']} !important; }}
+    [class*="st-key-watering_"] button[kind="primary"] p {{ color:{NEW_COLOR} !important; }}
 
     /* "종목별 보유현황" 타이틀 옆 등락률순 토글 — 라벨 없이 점 하나만, 아래 정렬 라디오
        알약과 같은 계열의 작은 크기(new1에서 먼저 만들고 포팅함, 2026-08-28). */
@@ -191,16 +188,15 @@ st.markdown(f"""
     [class*="st-key-change_sort_toggle"] button[kind="secondary"] p {{ color:{T['muted2']} !important; }}
     [class*="st-key-change_sort_toggle"] button[kind="primary"] p {{ color:{UP_COLOR} !important; }}
 
-    /* "종목별 보유현황" 타이틀 줄 3칸만 전역 등폭 규칙을 덮어써서 원하는 비율로 */
-    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(1) {{
-        flex: 6 1 0 !important;
+    /* "Holdings" 타이틀 줄 — 등락률순 토글 점 + 업데이트 날짜를 한 줄로 나란히(2026-09-04, new1 동일) */
+    [class*="st-key-holdings_title_row"] div[data-testid="stHorizontalBlock"] {{ align-items:center !important; gap:0 !important; }}
+    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(1) {{ flex: 5 1 0 !important; }}
+    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(2) {{ flex: 4 1 0 !important; }}
+    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(2) > div[data-testid="stVerticalBlock"] {{
+        flex-direction: row !important; align-items: center !important; justify-content: flex-end !important;
+        gap: 4px !important;
     }}
-    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(2) {{
-        flex: 1 1 0 !important;
-    }}
-    [class*="st-key-holdings_title_row"] div[data-testid="stColumn"]:nth-of-type(3) {{
-        flex: 3 1 0 !important;
-    }}
+    .holdings-updated {{ font-size:11px; color:{T['muted2']}; white-space:nowrap; }}
 
     .tx-card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:10px; padding:10px 14px; margin-bottom:6px; display:flex; justify-content:space-between; align-items:center; }}
     .tx-left {{ font-size:13px; }}
@@ -569,6 +565,7 @@ if refresh_clicked_top or auto_refresh_triggered:
         _dom = df_top[df_top["통화"].fillna("원") != "USD"] if "통화" in df_top else df_top
         snapshot_dom_asset_history(float(pd.to_numeric(_dom["평가금액"], errors="coerce").fillna(0).sum()))
         refresh_market_cache(holdings[holdings["통화"].fillna("원") != "USD"] if "통화" in holdings else holdings)
+        snapshot_bigcap_history(fetch_bigcap_quotes())  # 삼성전자/삼성전자우/SK하이닉스 종가 (SamHynix extracted)
     if refresh_report["updated"]:
         st.toast(f"{refresh_report['updated']}개 종목 시세 갱신 완료")
     if refresh_report["unresolved"]:
@@ -579,7 +576,7 @@ if refresh_clicked_top or auto_refresh_triggered:
         st.warning(err)
     st.rerun()
 
-tab_port, tab_tx = st.tabs(["포트폴리오", "거래 기록"])
+tab_port, tab_tx = st.tabs(["Portfolio", "Analysis"])
 
 # ==================================================================== #
 # 탭 1: 포트폴리오
@@ -646,7 +643,7 @@ with tab_port:
     """, unsafe_allow_html=True)
 
     # ---- 섹터 비중 도넛 + 목표 비중 관리 ----
-    with st.expander("섹터 비중 보기", expanded=False):
+    with st.expander("Sectors", expanded=False):
         include_cash = st.toggle("예수금 포함", value=st.session_state.get("include_cash", True), key="cash_toggle")
         st.session_state["include_cash"] = include_cash
 
@@ -839,25 +836,20 @@ with tab_port:
     # [class*="st-key-holdings_title_row"] 스코프 CSS로 비율을 다시 덮어씀(new1에서 먼저
     # 발견·수정하고 포팅함, 2026-08-28).
     with st.container(key="holdings_title_row"):
-        col_title2, col_change_toggle, col_updated = st.columns(3)
+        col_title2, col_right = st.columns([5, 4])
         with col_title2:
-            st.markdown("##### 종목별 보유현황")
-        with col_change_toggle:
-            # 매일 가장 먼저 확인하는 기준이라 타이틀 옆에서 바로 토글할 수 있게 함. 라벨
-            # 없이 동그라미 점 하나만 — 안 눌림=옅은 회색, 눌림=빨강. 아래 정렬 라디오와는
-            # 독립된 별도 상태(change_sort_active)로 두고, 라디오 옵션 목록엔 "등락률"을
-            # 안 넣음(중복 노출 방지).
+            st.markdown("##### Holdings")
+        with col_right:
+            # 등락률순 정렬 토글 점 + 업데이트 날짜를 한 줄로 나란히(app.py CSS로 row-flex).
+            # 안 눌림=회색, 누르면 빨강. 아래 정렬 라디오와는 독립된 상태(change_sort_active).
             is_change_sort = st.session_state.change_sort_active
             if st.button("●", key="change_sort_toggle",
                          type="primary" if is_change_sort else "secondary",
                          help="등락률순 정렬"):
                 st.session_state.change_sort_active = not is_change_sort
                 st.rerun()
-        with col_updated:
-            st.markdown(
-                f"<div style='text-align:right;font-size:11px;color:{T['muted2']};padding-top:10px;'>{last_updated}</div>",
-                unsafe_allow_html=True,
-            )
+            st.markdown(f"<div class='holdings-updated'>{last_updated}</div>",
+                        unsafe_allow_html=True)
 
     # ---- 코스피 / 코스닥 지수 (상단 새로고침에 같이 갱신됨) ----
     idx = st.session_state.get("index_quotes") or {}
@@ -931,9 +923,15 @@ with tab_port:
             code = r["종목코드"]
             is_open = st.session_state.holding_detail_open == code
 
+            # 물타기(현재 사이클 매수 2회+) 했는데 반등해서 현재가 ≥ 최초진입가면 카드 옅은 녹색
+            _pts = get_holding_trade_points(tx, r["종목명"])
+            _buys = _pts[_pts["구분"] == "매수"] if not _pts.empty else _pts
+            _watered_ok = (len(_buys) >= 2 and float(r["현재가"]) >= float(_buys.iloc[0]["단가"]))
+            _card_cls = "stock-card watered-ok" if _watered_ok else "stock-card"
+
             with st.container(key=f"holding_wrap_{code}"):
                 st.markdown(f"""
-                <div class="stock-card">
+                <div class="{_card_cls}">
                     <div class="stock-top">
                         <span class="stock-title-group"><span class="stock-name">{r['종목명']}</span></span>
                         <span class="sector-tag" style="background:{sc}22;color:{sc}">{r['섹터']}</span>
@@ -950,7 +948,7 @@ with tab_port:
                 </div>
                 """, unsafe_allow_html=True)
 
-                if st.button("WATERING", key=f"watering_{code}",
+                if st.button("●", key=f"watering_{code}", help="WATERING",
                              type="primary" if is_open else "secondary"):
                     st.session_state.holding_detail_open = None if is_open else code
                     st.rerun()
@@ -985,7 +983,7 @@ with tab_tx:
     """, unsafe_allow_html=True)
 
     # ---- 실현손익 그래프: 누적 실현손익(호버 시 그날 실현손익도 표시) vs 미실현손실 ----
-    st.markdown("##### 실현손익 그래프")
+    st.markdown("##### Realized P&L")
 
     tx_realized = tx[tx["구분"] == "매도"].copy()
     tx_realized["실현손익"] = pd.to_numeric(tx_realized["실현손익"], errors="coerce").fillna(0)
@@ -1067,17 +1065,14 @@ with tab_tx:
         f" <span style='font-size:11px;font-weight:400;color:{T['muted']}'>"
         f"보유비중 코스피 {wk * 100:.0f}% · 코스닥 {(1 - wk) * 100:.0f}%</span>"
     )
-    st.markdown(f"##### 지수 대비 계좌 <span style='font-size:12px;color:{T['muted2']}'>(국내주식만)</span>{_wtag}",
-                unsafe_allow_html=True)
+    def _render_iva_panel(iva, idx_hist_local, kospi_label, carousel_id):
+        """'지수 대비 계좌'(국내만) 한 벌 — 5줄 표 + RP 2줄 + 스와이프 캐러셀. 메인(코스피)과
+        'SamHYnix extracted'(코스피 다리 = 삼성·하이닉스 제외)가 이 렌더러를 공유한다."""
+        me, idxc, latest = iva["me"], iva["index"], iva["latest"]
+        if me.empty or idxc.empty:
+            st.info("시세를 새로고침하면 국내 지수·자산 스냅샷이 쌓여서 그래프가 그려집니다.")
+            return
 
-    iva = compute_index_vs_account(tx, dom_hist, idx_hist, state["initial"],
-                                    state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
-                                    kospi_weight=wk)
-    me, idxc, latest = iva["me"], iva["index"], iva["latest"]
-
-    if me.empty or idxc.empty:
-        st.info("시세를 새로고침하면 국내 지수·자산 스냅샷이 쌓여서 그래프가 그려집니다.")
-    else:
         def _pct(v):
             return "—" if v is None else f"{v * 100:+.2f}%"
 
@@ -1088,16 +1083,39 @@ with tab_tx:
                 return T["text"]
             return UP_COLOR if v >= ref else DOWN_COLOR
 
+        _s5 = {
+            "코스피": idxc["코스피"] if "코스피" in idxc else None,
+            "코스닥": idxc["코스닥"] if "코스닥" in idxc else None,
+            "벤치": me["벤치누적"] if "벤치누적" in me else None,
+            "주식": me["주식수익"] if "주식수익" in me else None,
+            "계좌": me["계좌수익"] if "계좌수익" in me else None,
+        }
+
+        def _recent5(key):
+            s = _s5.get(key)
+            if s is None or len(s) < 6:
+                return None
+            a, b = s.iloc[-1], s.iloc[-6]
+            if pd.isna(a) or pd.isna(b):
+                return None
+            return (1 + a) / (1 + b) - 1
+
+        bench_r5 = _recent5("벤치")
+
         def _row(label, dot_color, dashed, key, color_by_bench):
             cum, day = latest.get(key, (None, None))
+            rec = _recent5(key)
             if color_by_bench:
-                cc, dc = _color_vs_bench(cum, bench[0]), _color_vs_bench(day, bench[1])
+                cc = _color_vs_bench(cum, bench[0])
+                rcc = _color_vs_bench(rec, bench_r5)
+                dc = _color_vs_bench(day, bench[1])
             else:
-                cc = dc = T["muted"]
+                cc = rcc = dc = T["muted"]
             mark = "┈" if dashed else "●"
             return (
                 f"<tr><td style='color:{dot_color}'>{mark}&nbsp;{label}</td>"
                 f"<td style='text-align:right;color:{cc}'>{_pct(cum)}</td>"
+                f"<td style='text-align:right;color:{rcc}'>{_pct(rec)}</td>"
                 f"<td style='text-align:right;color:{dc}'>{_pct(day)}</td></tr>"
             )
 
@@ -1105,8 +1123,8 @@ with tab_tx:
             "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:-2px 0 4px'>"
             f"<tr style='color:{T['muted2']};font-size:10px'>"
             "<th style='text-align:left'>&nbsp;</th><th style='text-align:right'>누적</th>"
-            "<th style='text-align:right'>당일</th></tr>"
-            + _row("코스피", KOSPI_COLOR, False, "코스피", False)
+            "<th style='text-align:right'>5일</th><th style='text-align:right'>당일</th></tr>"
+            + _row(kospi_label, KOSPI_COLOR, False, "코스피", False)
             + _row("코스닥", KOSDAQ_COLOR, False, "코스닥", False)
             + _row("혼합지수", DOWN_COLOR, False, "벤치", False)
             + _row("내 주식", T["text"], False, "주식", True)
@@ -1163,7 +1181,7 @@ with tab_tx:
             unsafe_allow_html=True,
         )
 
-        moves = _index_day_moves(idx_hist).set_index("날짜")
+        moves = _index_day_moves(idx_hist_local).set_index("날짜")
         kd_map = moves["코스피d"].to_dict()
         qd_map = moves["코스닥d"].to_dict()
 
@@ -1183,10 +1201,10 @@ with tab_tx:
 
         fig2 = go.Figure()
         fig2.add_trace(go.Scatter(
-            x=idxc["날짜"], y=idxc["코스피"], name="코스피", mode="lines",
+            x=idxc["날짜"], y=idxc["코스피"], name=kospi_label, mode="lines",
             line=dict(color=KOSPI_COLOR, width=1.6),
             customdata=[[_fmt(c), _fmt(kd_map.get(d))] for c, d in zip(idxc["코스피"], idxc["날짜"])],
-            hovertemplate=_ht("코스피"),
+            hovertemplate=_ht(kospi_label),
         ))
         fig2.add_trace(go.Scatter(
             x=idxc["날짜"], y=idxc["코스닥"], name="코스닥", mode="lines",
@@ -1270,7 +1288,7 @@ with tab_tx:
         h2 = fig_s.to_html(include_plotlyjs=False, full_html=False, config=cfg, default_width="100%")
         components.html(
             f"""
-<div id="cwrap">
+<div id="{carousel_id}">
   <div class="track">
     <div class="slide">{h1}</div>
     <div class="slide">{h2}</div>
@@ -1279,28 +1297,40 @@ with tab_tx:
 </div>
 <style>
   body {{ margin:0; background:transparent; }}
-  #cwrap .track {{ display:flex; overflow-x:auto; scroll-snap-type:x mandatory; overscroll-behavior-x:contain;
+  #{carousel_id} .track {{ display:flex; overflow-x:auto; scroll-snap-type:x mandatory; overscroll-behavior-x:contain;
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }}
-  #cwrap .track::-webkit-scrollbar {{ display:none; }}
-  #cwrap .slide {{ flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always; }}
-  #cwrap .dots {{ display:flex; justify-content:center; gap:7px; padding:4px 0 0; }}
-  #cwrap .dot {{ width:7px; height:7px; border-radius:50%; background:{T['muted2']};
+  #{carousel_id} .track::-webkit-scrollbar {{ display:none; }}
+  #{carousel_id} .slide {{ flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always; }}
+  #{carousel_id} .dots {{ display:flex; justify-content:center; gap:10px; padding:5px 0 0; }}
+  #{carousel_id} .dot {{ width:9px; height:9px; border-radius:50%; background:{T['muted2']};
     opacity:.3; transition:opacity .18s, background .18s; }}
-  #cwrap .dot.on {{ opacity:1; background:{T['text']}; }}
+  #{carousel_id} .dot.on {{ opacity:1; background:{T['text']}; }}
 </style>
 <script>
   (function() {{
-    var track = document.querySelector('#cwrap .track');
-    var dots = document.querySelectorAll('#cwrap .dot');
+    var track = document.querySelector('#{carousel_id} .track');
+    var dots = document.querySelectorAll('#{carousel_id} .dot');
     function sync() {{
       var i = Math.round(track.scrollLeft / Math.max(track.clientWidth, 1));
       dots.forEach(function(d, j) {{ d.classList.toggle('on', j === i); }});
     }}
     track.addEventListener('scroll', sync, {{passive: true}});
+    dots.forEach(function(d, j) {{
+      d.style.cursor = 'pointer';
+      d.addEventListener('click', function() {{
+        track.scrollTo({{left: j * track.clientWidth, behavior: 'smooth'}});
+      }});
+    }});
+    track.setAttribute('tabindex', '0');
+    track.addEventListener('keydown', function(e) {{
+      var cur = Math.round(track.scrollLeft / Math.max(track.clientWidth, 1));
+      if (e.key === 'ArrowRight') track.scrollTo({{left: (cur + 1) * track.clientWidth, behavior: 'smooth'}});
+      if (e.key === 'ArrowLeft') track.scrollTo({{left: (cur - 1) * track.clientWidth, behavior: 'smooth'}});
+    }});
     function rz() {{
-      var w = document.querySelector('#cwrap .track').clientWidth;
+      var w = document.querySelector('#{carousel_id} .track').clientWidth;
       if (!w) return;
-      document.querySelectorAll('#cwrap .plotly-graph-div').forEach(function(g) {{
+      document.querySelectorAll('#{carousel_id} .plotly-graph-div').forEach(function(g) {{
         if (window.Plotly) window.Plotly.relayout(g, {{width: w, height: 275}});
       }});
     }}
@@ -1312,10 +1342,66 @@ with tab_tx:
             height=315,
         )
 
+    # ---- Account : Index (메인: 코스피/코스닥, 국내주식만) ----
+    st.markdown(f"##### Account : Index <span style='font-size:12px;color:{T['muted2']}'>(국내주식만)</span>{_wtag}",
+                unsafe_allow_html=True)
+    iva = compute_index_vs_account(tx, dom_hist, idx_hist, state["initial"],
+                                    state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
+                                    kospi_weight=wk)
+    _render_iva_panel(iva, idx_hist, "코스피", "cwrap")
+
+    # ---- KOSPI 2-Track Trend: 일반(빨강) vs 삼성·삼성우·하이닉스 제외(파랑), 실제 지수 포인트 ----
+    _bg_k = load_bigcap_history()
+    if not idx_hist.empty and not _bg_k.empty:
+        _ih = idx_hist.sort_values("날짜").reset_index(drop=True)
+        _sh = synthetic_kospi_ex_bigcap(idx_hist, _bg_k).sort_values("날짜").reset_index(drop=True)
+        _k = pd.to_numeric(_ih["KOSPI"], errors="coerce")
+        _ke = pd.to_numeric(_sh["KOSPI"], errors="coerce")
+        _kd = ["—" if pd.isna(d) else f"{d:+.2%}" for d in _k.pct_change()]
+        _ked = ["—" if pd.isna(d) else f"{d:+.2%}" for d in _ke.pct_change()]
+        st.markdown("##### KOSPI 2-Track Trend", unsafe_allow_html=True)
+        fig_k = go.Figure()
+        fig_k.add_trace(go.Scatter(
+            x=_ih["날짜"], y=_k, name="코스피", mode="lines",
+            line=dict(color=UP_COLOR, width=1.8), customdata=_kd,
+            hovertemplate="<b>코스피</b> %{y:,.0f} · 전일 %{customdata}<extra></extra>"))
+        fig_k.add_trace(go.Scatter(
+            x=_sh["날짜"], y=_ke, name="삼성·하이닉스 제외", mode="lines",
+            line=dict(color=DOWN_COLOR, width=1.8), customdata=_ked,
+            hovertemplate="<b>삼성·하이닉스 제외</b> %{y:,.0f} · 전일 %{customdata}<extra></extra>"))
+        fig_k.update_layout(
+            height=210, margin=dict(l=48, r=8, t=6, b=24),
+            paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(color=T["text"], size=11),
+            legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, font=dict(size=10)),
+            hovermode="x unified",
+            hoverlabel=dict(bgcolor=T["card"], bordercolor=T["border"], font=dict(size=11, color=T["text"])),
+            xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+            yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=False, tickformat=",.0f",
+                       tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+            dragmode=False,
+        )
+        st.plotly_chart(fig_k, use_container_width=True, config={"displayModeBar": False})
+
+    with st.expander("SamHYnix extracted", expanded=False):
+        st.markdown(
+            f"<div style='font-size:10px;color:{T['muted2']};white-space:nowrap;overflow:hidden;"
+            f"text-overflow:ellipsis;margin:-2px 0 4px'>혼합지수에 '삼성전자·삼성전자우·SK하이닉스 "
+            f"제외 코스피' 반영</div>", unsafe_allow_html=True)
+        _bg = load_bigcap_history()
+        if _bg.empty:
+            st.caption("bigcap_history.csv 비어있음 — `python backfill_bigcap_history.py` 먼저.")
+        else:
+            _syn = synthetic_kospi_ex_bigcap(idx_hist, _bg)
+            _iva_ex = compute_index_vs_account(tx, dom_hist, _syn, state["initial"],
+                                                state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
+                                                kospi_weight=wk)
+            _render_iva_panel(_iva_ex, _syn, "삼성·하이닉스 제외", "cwrap_ex")
+
     st.divider()
 
-    # ---- 거래 내역 (캘린더) ----
-    st.markdown("##### 거래 내역")
+    # ---- History Calendar ----
+    st.markdown("##### History Calendar")
 
     if "cal_year" not in st.session_state:
         st.session_state.cal_year = now_kst().year
