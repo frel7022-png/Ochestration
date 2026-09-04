@@ -1133,38 +1133,35 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
         latest["계좌"] = (_last(me["계좌수익"]), _last(me["계좌당일"]))
         latest["벤치"] = (_last(me["벤치누적"]), _last(me["벤치당일"]))
 
-    # RP(relative performance) = 구간별 (Δ내수익 − Δ벤치) / |Δ벤치| (2026-09-02, new1 §6-17과 동일).
-    #  0 = 시장과 동일, 양수 = 시장보다 잘함, 음수 = 못함 (상승·하락장 한 식). 표시는 ±3 clamp.
-    #  누적/5일 = 구간별 점수 중앙값(벤치 0 근처인 날 값 폭발 방어), 당일 = 마지막 1구간.
+    # RP(창) = (내 창-누적수익 − 벤치 창-누적수익) / |벤치 창-누적수익| (2026-09-04, new1 §6-17과 동일).
+    #  당일 = 최근 1구간 / 5일 = 최근 beta_window구간(복리 누적) / 누적 = 앵커부터. 셋 다 같은 식을
+    #  다른 지평에서 본 것. 예전엔 당일 점수를 median 낸 게 5일·누적이었는데 비율은 평균이 안 되므로
+    #  (평균(aᵢ/bᵢ) ≠ Σaᵢ/Σbᵢ) 창 누적수익으로 직접 계산. 벤치 창-누적이 ±GUARD보다 작으면 None.
     CLAMP = 3.0
-    dbe = me["벤치당일"].values
+    GUARD = 0.003
+    _bc = me["벤치누적"].values
 
-    def _interval_score(dm, db):
-        if pd.isna(dm) or pd.isna(db) or abs(db) < 1e-9:
-            return None
-        return min(max((dm - db) / abs(db), -CLAMP), CLAMP)
-
-    def _median(vals):
-        v = sorted(x for x in vals if x is not None)
-        if not v:
-            return None
-        n = len(v)
-        return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
-
-    def _sens_cols(dser):
-        dm = dser.values
-        scores = [None] + [_interval_score(dm[i], dbe[i]) for i in range(1, len(me))]
-        all_c, rec_c, tod_c = [None], [None], [None]
-        for i in range(1, len(me)):
-            win = [x for x in scores[1:i + 1] if x is not None]
-            rec = [x for x in scores[max(1, i + 1 - beta_window):i + 1] if x is not None]
-            all_c.append(_median(win) if len(win) >= 3 else None)
-            rec_c.append(_median(rec) if len(rec) >= 3 else None)
-            tod_c.append(scores[i])
+    def _rp_cols(mine_cum):
+        """각 창에서 벤치·내 누적수익의 변화를 먼저 구한 뒤 한 번 나눈다(비율의 평균이 아님)."""
+        n = len(me)
+        all_c = [None] * n
+        rec_c = [None] * n
+        tod_c = [None] * n
+        for i in range(1, n):
+            for out, j, need in ((all_c, 0, 3),
+                                  (rec_c, max(0, i - beta_window), 3),
+                                  (tod_c, i - 1, 1)):
+                if i - j < need:
+                    continue
+                b = _bc[i] - _bc[j]
+                m = mine_cum[i] if j == 0 else mine_cum[i] - mine_cum[j]
+                if pd.isna(b) or pd.isna(m) or abs(b) < GUARD:
+                    continue
+                out[i] = min(max((m - b) / abs(b), -CLAMP), CLAMP)
         return all_c, rec_c, tod_c
 
-    s_all, s_rec, s_tod = _sens_cols(me["주식수익"].diff())
-    a_all, a_rec, a_tod = _sens_cols(me["계좌수익"].diff())
+    s_all, s_rec, s_tod = _rp_cols(me["주식수익"].values)
+    a_all, a_rec, a_tod = _rp_cols(me["계좌수익"].values)
     for col, data in (("상대성과누적", s_all), ("상대성과최근", s_rec), ("상대성과당일", s_tod),
                        ("계좌상대성과누적", a_all), ("계좌상대성과최근", a_rec), ("계좌상대성과당일", a_tod)):
         me[col] = pd.Series(data, index=me.index, dtype="float64")
