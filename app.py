@@ -1157,7 +1157,7 @@ with tab_tx:
 
         st.markdown(
             "<div style='font-size:10px;color:" + T["muted2"] + ";margin:2px 0 1px'>"
-            "RP (relative performance) — 0=시장과 동일, 양수=시장보다 잘함. 당일 뒤 (%p)는 혼합지수 대비 초과 수익</div>"
+            "RP (relative performance) — 0=시장과 동일, 양수=시장보다 잘함</div>"
             + _sens_line("내 주식", iva["sens_all"], iva["sens_recent"], iva["sens_today"], _excess("주식"))
             + _sens_line("내 계좌", iva["acct_sens_all"], iva["acct_sens_recent"], iva["acct_sens_today"], _excess("계좌")),
             unsafe_allow_html=True,
