@@ -260,3 +260,33 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   `compute_index_vs_account(tx, dom_asset_hist, index_hist, initial, fee_rate_krw, fee_rate_usd,
   kospi_weight)`. 반환 dict 구조는 new1 §6-17과 동일. meritz엔 pytest가 없어 new1 테스트로
   로직 검증 후 이식함.
+
+### 6-5. 2026-09-04 — new1 오늘 변경분 대량 이식 (new1 §6-18/§6-19 등)
+방어 성적이 의도대로 나온 걸 확인하고 사용자가 "외국인 배지만 빼고 다 넣자"고 해서 이식:
+- **SamHynix extracted 패널**(new1 §6-19): "Account : Index" 밑 expander. 혼합지수의
+  코스피 다리를 "코스피 ex-삼성전자·삼성전자우·SK하이닉스"로 갈아끼운 버전. 국내 벤치에
+  적용(meritz는 원래 국내주식만 계산이므로 코스피 다리만 교체하면 됨).
+  - `portfolio_core`: `load/save/snapshot_bigcap_history`, `fetch_bigcap_quotes`,
+    `synthetic_kospi_ex_bigcap`, 상수 `BIGCAP_CODES`/`_BIGCAP_SHARES`/`_KOSPI_MKTCAP_ANCHOR`.
+    `synthetic_kospi_ex_bigcap(index_hist, bigcap_hist)`가 index_hist의 KOSPI 열을 합성
+    레벨로 바꾼 사본을 돌려주고, 그걸 `compute_index_vs_account`에 그대로 넘기면 끝.
+    meritz엔 `resolve_trading_date`가 없어 `snapshot_bigcap_history`는 `today_kst_str()` 사용.
+  - `bigcap_history.csv`(날짜,삼성전자,삼성전자우,SK하이닉스 종가), 백필 `python
+    backfill_bigcap_history.py`(재실행 가능), 일별 갱신은 새로고침 핸들러의
+    `snapshot_bigcap_history(fetch_bigcap_quotes())`.
+  - 비중 상수는 2026-09-04 스냅샷(삼성 ~28%+삼성우 ~3%+하이닉스 ~22%≈52%). 분기 갱신 권장.
+- **"KOSPI 2-Track Trend" 라인차트**: "Account : Index" 패널 바로 밑. 일반 코스피(빨강) vs
+  삼성·하이닉스 제외(파랑), **y축은 실제 지수 포인트**, hover엔 전일 대비 등락률%.
+- **표에 "5일" 컬럼**: 누적 / 5일 / 당일. "5일" = 시계열 5행 전 대비(코스피·코스닥=5거래일,
+  벤치·내 주식·내 계좌=스냅샷 5구간).
+- **렌더러 추출**: 지수 대비 계좌 렌더링을 `_render_iva_panel(iva, idx_hist_local, kospi_label,
+  carousel_id)` 로컬 함수로 빼서 메인/SamHynix 두 패널이 공유. 캐러셀 id `cwrap`/`cwrap_ex`
+  분리 + 점 클릭/좌우 화살표 키로도 전환(PC).
+- **섹션 타이틀 영어화**: 종목별 보유현황→`Holdings`, 실현손익 그래프→`Realized P&L`,
+  지수 대비 계좌→`Account : Index`, 섹터 비중 보기→`Sectors`, 거래 내역→`History Calendar`,
+  탭 포트폴리오/거래 기록→`Portfolio`/`Analysis`. (영어 라벨 첫 글자 항상 대문자.)
+- **자잘한 디자인**: 섹터 범례↔막대 간격(`.legend-wrap` margin-bottom 20px), WATERING을
+  텍스트 칩→점(회색/누르면 녹색), Holdings 정렬 토글 점을 업데이트 날짜 옆에 나란히,
+  **물타기 회복 종목 카드 옅은 녹색**(`.stock-card.watered-ok` — 현재 사이클 매수 2회+ &
+  현재가 ≥ 최초진입가).
+- **미이식**: 외국인 보유율 배지(new1 §4). 사용자가 "외국인 제외" 명시.
