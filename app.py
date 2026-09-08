@@ -578,12 +578,12 @@ if refresh_clicked_top or auto_refresh_triggered:
         snapshot_dom_asset_history(float(pd.to_numeric(_dom["평가금액"], errors="coerce").fillna(0).sum()))
         refresh_market_cache(holdings[holdings["통화"].fillna("원") != "USD"] if "통화" in holdings else holdings)
         snapshot_bigcap_history(fetch_bigcap_quotes())  # 삼성전자/삼성전자우/SK하이닉스 종가 (SamHynix extracted)
-        # §6-17 국면막대: 시장 사실상 무변동인 날(|벤치당일|<0.001) → report/capture_anomalies.csv 누적 기록.
+        # §6-17: even일(|벤치당일| ≤ 0.1%) → report/capture_anomalies.csv 누적 기록.
         try:
             _iva_a = compute_index_vs_account(tx, load_dom_asset_history(), load_index_history(),
                                               state["initial"], state.get("fee_rate_krw", 0.0),
                                               state.get("fee_rate_usd", 0.0))
-            append_capture_anomalies(_iva_a.get("cap_anomalies", []))
+            append_capture_anomalies(_iva_a.get("even_anomalies", []))
         except Exception:
             pass
     if refresh_report["updated"]:
@@ -1097,7 +1097,8 @@ with tab_tx:
         f"보유비중 코스피 {wk * 100:.0f}% · 코스닥 {(1 - wk) * 100:.0f}%</span>"
     )
     def _render_iva_panel(iva, idx_hist_local, kospi_label, carousel_id):
-        """'지수 대비 계좌'(국내만) 한 벌 — 5줄 표 + CR(국면막대) 2줄 + 스와이프 캐러셀. 메인(코스피)과
+        """'지수 대비 계좌'(국내만) 2장 스와이프 캐러셀 — 1장 [5줄 지수 표 + 선그래프],
+        2장 [하락/상승/even 캡처 표 3개 + 일별 캡처 막대]. 메인(코스피)과
         'SamHYnix extracted'(코스피 다리 = 삼성·하이닉스 제외)가 이 렌더러를 공유한다."""
         me, idxc, latest = iva["me"], iva["index"], iva["latest"]
         if me.empty or idxc.empty:
@@ -1150,7 +1151,7 @@ with tab_tx:
                 f"<td style='text-align:right;color:{dc}'>{_pct(day)}</td></tr>"
             )
 
-        st.markdown(
+        idx_table_html = (
             "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:-2px 0 4px'>"
             f"<tr style='color:{T['muted2']};font-size:10px'>"
             "<th style='text-align:left'>&nbsp;</th><th style='text-align:right'>누적</th>"
@@ -1160,60 +1161,51 @@ with tab_tx:
             + _row("혼합지수", DOWN_COLOR, False, "벤치", False)
             + _row("내 주식", T["text"], False, "주식", True)
             + _row("내 계좌", T["muted2"], True, "계좌", True)
-            + "</table>",
-            unsafe_allow_html=True,
+            + "</table>"
         )
 
-        b_cum, b_day = latest.get("벤치", (None, None))
-        my_cum, my_day = latest.get("주식", (None, None))
+        # ---- 하락 / 상승 / even 캡처 표 3개 (new1 §6-17 — CR·국면막대 폐기) ----
+        # 바구니마다 미니 표: 행 = 내 계좌 / 내 주식, 열 = 누적(DC/UC=Σ내/Σ벤치, even=e평균) /
+        #   당일(오늘이 그 바구니면 그날 값) / Pct(ERA 하락 c<1 / PCT 상승 c>=1 / evr even e>=+0.1%).
+        # 숫자 색: DC 표 빨강, UC 표 파랑(국내관례 반대), even 표 회색.
+        cap_a, cap_s = iva["cap"]["acct"], iva["cap"]["stock"]
+        nn = iva["n"]
 
-        def _p(v):
-            return "—" if v is None or pd.isna(v) else f"{v * 100:+.2f}%"
+        def _cap_tbl(title, color, want, avg_key, wr_key, is_pp):
+            def _num(v):
+                if v is None or (isinstance(v, float) and pd.isna(v)):
+                    return "—"
+                return f"{v * 100:+.2f}%" if is_pp else f"{v:.2f}"
 
-        st.markdown(
-            f"<div style='font-size:11px;color:{T['muted']};margin:0 0 2px'>"
-            f"당일  혼합지수 <b>{_p(b_day)}</b>  /  내 주식 <b>{_p(my_day)}</b>"
-            f"<span style='color:{T['muted2']}'> · 누적 {_p(b_cum)} / {_p(my_cum)}</span></div>",
-            unsafe_allow_html=True,
-        )
+            def _today(sm):
+                return _num(sm.get("today")) if sm.get("today_bucket") == want else "—"
 
-        # ---- 국면별 민감도 막대 요약 (2026-09-04, RP 대체 — new1 §6-17과 동일) ----
-        # 하루마다 막대 하나. 시장이 내린 날엔 "얼마나 안 따라 빠졌나(방어)", 오른 날엔 "얼마나
-        # 따라 올랐나(참여)". 둘 다 1 = 시장과 똑같이, 높을수록 좋음.
-        #   하락일 막대 = 1 − 내당일/벤치당일,   상승일 막대 = 내당일/벤치당일
-        # 하락장/상승장 = 각 국면 막대 평균. CR = 상승장 ÷ 하락장 (1=대칭 "똔똔", >1=우호적).
-        # 5일 = 최근 5구간 막대 평균.
-        basis = iva["sensitivity_basis"]
+            def _wr(sm):
+                tp = sm.get(wr_key)
+                return "—" if not tp or tp[1] == 0 else f"{tp[0]}/{tp[1]}"
 
-        def _s(v):
-            return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else f"{v:+.2f}"
-
-        def _cr(v):
-            return "—" if v is None or (isinstance(v, float) and pd.isna(v)) else f"{v:.2f}"
-
-        _last_regime = str(me["국면"].iloc[-1]) if ("국면" in me and len(me)) else ""
-        _today_word = "방어" if _last_regime == "하락" else "참여" if _last_regime == "상승" else "당일"
-
-        # 색은 아래 막대 그래프와 맞춤 — 하락장 = 빨강(UP_COLOR), 상승장 = 파랑(DOWN_COLOR).
-        def _cap_line(label, today, down, up, cr, d5):
+            rows = ""
+            for lbl, sm in (("내 계좌", cap_a), ("내 주식", cap_s)):
+                rows += (f"<tr><td style='color:{color}'>{lbl}</td>"
+                         f"<td style='text-align:right;color:{color}'>{_num(sm.get(avg_key))}</td>"
+                         f"<td style='text-align:right;color:{color}'>{_today(sm)}</td>"
+                         f"<td style='text-align:right;color:{T['muted2']}'>{_wr(sm)}</td></tr>")
             return (
-                f"<div style='font-size:11px;color:{T['muted']};margin:0 0 3px'>"
-                f"CR·{label} <span style='color:{T['muted2']}'>({basis})</span>  "
-                f"<b style='color:{T['text']}'>오늘 {_today_word} {_s(today)}</b> · "
-                f"<b style='color:{UP_COLOR}'>하락장 {_s(down)}</b> · "
-                f"<b style='color:{DOWN_COLOR}'>상승장 {_s(up)}</b> · "
-                f"<b style='color:{T['text']}'>CR {_cr(cr)}</b>"
-                f" <span style='color:{T['muted2']};font-weight:400'>· 5일 {_s(d5)}</span></div>"
+                "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:3px 0 0'>"
+                f"<tr style='font-size:10px'>"
+                f"<th style='text-align:left;color:{color}'>{title}</th>"
+                f"<th style='text-align:right;color:{T['muted2']}'>누적</th>"
+                f"<th style='text-align:right;color:{T['muted2']}'>당일</th>"
+                f"<th style='text-align:right;color:{T['muted2']}'>Pct</th></tr>"
+                f"{rows}</table>"
             )
 
-        st.markdown(
-            "<div style='font-size:10px;color:" + T["muted2"] + ";margin:2px 0 1px'>"
-            "CR (capture ratio) — 1 = 시장과 동일 · 하락장·상승장 모두 높을수록 좋음 · CR&gt;1 = 상승참여 &gt; 하락방어</div>"
-            + _cap_line("내 주식", iva["cap_today"], iva["cap_down"], iva["cap_up"],
-                        iva["cap_cr"], iva["cap_5d"])
-            + _cap_line("내 계좌", iva["acct_cap_today"], iva["acct_cap_down"], iva["acct_cap_up"],
-                        iva["acct_cap_cr"], iva["acct_cap_5d"]),
-            unsafe_allow_html=True,
+        caps_html = (
+            _cap_tbl("DC ERA", UP_COLOR, "하락", "dc", "era", False)
+            + _cap_tbl("UC ERA", DOWN_COLOR, "상승", "uc", "pct", False)
+            + _cap_tbl("even 평균 · 승률 (±0.1%)", T["muted2"], "even", "even", "evr", True)
+            + f"<div style='font-size:10px;color:{T['muted2']};margin:3px 0 4px'>"
+              f"하락 {nn['down']} · 상승 {nn['up']} · even {nn['even']}</div>"
         )
 
         moves = _index_day_moves(idx_hist_local).set_index("날짜")
@@ -1290,35 +1282,26 @@ with tab_tx:
             hovermode="x unified", dragmode=False,
         )
 
-        # ---- 국면별 민감도 막대 그래프 (RP 그래프 대체, 2026-09-04 — new1 §6-17과 동일) ----
-        # 하루 = 막대 하나. 시장이 내린 날 = 빨강 막대(그날 "방어" = 1 − 내당일/벤치당일),
-        # 오른 날 = 파랑 막대(그날 "참여" = 내당일/벤치당일). 기준선 y=1 = 시장과 똑같이 움직임.
-        # 위로 갈수록 잘한 것. 누적/5일 선 없앰.
-        _cap_bars = me["국면막대주식"] if "국면막대주식" in me else pd.Series([None] * len(me), index=me.index)
-        _reg = me["국면"] if "국면" in me else pd.Series([""] * len(me), index=me.index)
-        _bar_colors = [UP_COLOR if r == "하락" else DOWN_COLOR if r == "상승" else T["muted2"] for r in _reg]
-
-        def _bpct(v):
-            return "—" if pd.isna(v) else f"{v * 100:+.2f}%"
-
-        # 막대 값만 보면 극단치가 왜 그런지 판단이 안 돼서 원본 % 3개를 같이 보여줌
-        # (new1 §6-17과 동일, 2026-09-05) — 혼합지수(벤치) 당일 / 내 주식 당일 / 내 계좌 당일.
-        _bar_cd = list(zip(
-            ["하락장" if r == "하락" else "상승장" if r == "상승" else "—" for r in _reg],
-            ["—" if pd.isna(v) else f"{v:+.2f}" for v in _cap_bars],
-            [_bpct(v) for v in me["벤치당일"]],
-            [_bpct(v) for v in me["주식당일"]],
-            [_bpct(v) for v in me["계좌당일"]],
-        ))
+        # ---- 일별 캡처 막대 (new1 §6-17) : 하락일 빨강 / 상승일 파랑, y = 캡처 c, y=1 얇은 선 ----
+        # 내 계좌 기준. even일은 그래프에서 완전히 제외(단위가 %p라 캡처 축과 안 섞임 — 값은 표로만).
+        # 빨강이 1 아래 = 방어 잘함, 파랑이 1 위 = 참여 잘함.
+        _xs, _ys, _cols, _cd = [], [], [], []
+        for dt, c, bk, bd, ad in zip(me["날짜"], me["캡처계좌"], me["바구니"],
+                                     me["벤치당일"], me["계좌당일"]):
+            if bk not in ("하락", "상승") or pd.isna(c):
+                continue
+            _xs.append(dt)
+            _ys.append(float(c))
+            _cols.append(UP_COLOR if bk == "하락" else DOWN_COLOR)
+            _cd.append((bk, f"{bd * 100:+.2f}%" if pd.notna(bd) else "—",
+                        f"{ad * 100:+.2f}%" if pd.notna(ad) else "—"))
         fig_s = go.Figure()
         fig_s.add_trace(go.Bar(
-            x=me["날짜"], y=_cap_bars, marker_color=_bar_colors, marker_line_width=0,
-            customdata=_bar_cd,
-            hovertemplate=("<b>%{customdata[0]}</b> 민감도막대 %{customdata[1]}"
-                           "<br>혼합지수 %{customdata[2]} · 내 주식 %{customdata[3]} · 내 계좌 %{customdata[4]}"
-                           "<extra></extra>"),
+            x=_xs, y=_ys, marker_color=_cols, marker_line_width=0, customdata=_cd,
+            hovertemplate=("<b>%{customdata[0]}일</b> 캡처 %{y:.2f}"
+                           "<br>혼합지수 %{customdata[1]} · 내 계좌 %{customdata[2]}<extra></extra>"),
         ))
-        fig_s.add_hline(y=1, line_dash="dash", line_color=T["muted2"], line_width=1)  # y=1 = 시장과 동일
+        fig_s.add_hline(y=1, line_dash="dash", line_color=T["muted2"], line_width=1)
         fig_s.update_layout(
             height=275, margin=dict(l=40, r=8, t=8, b=30),
             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
@@ -1327,9 +1310,9 @@ with tab_tx:
                             font=dict(size=11, color=T["text"])),
             xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
             yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=True, zerolinecolor=T["border"],
-                       range=[-2.0, 3.0], dtick=1.0,
-                       tickfont=dict(size=9, color=T["muted"]), tickformat="+.0f", fixedrange=True),
-            hovermode="x unified", dragmode=False,
+                       range=[-1.5, 3.0], dtick=1.0,
+                       tickfont=dict(size=9, color=T["muted"]), tickformat=".1f", fixedrange=True),
+            dragmode=False,
         )
 
         cfg = {"displayModeBar": False, "responsive": True, "scrollZoom": False, "doubleClick": False}
@@ -1339,13 +1322,16 @@ with tab_tx:
             f"""
 <div id="{carousel_id}">
   <div class="track">
-    <div class="slide">{h1}</div>
-    <div class="slide">{h2}</div>
+    <div class="slide">{idx_table_html}{h1}</div>
+    <div class="slide">{caps_html}{h2}</div>
   </div>
   <div class="dots"><span class="dot on"></span><span class="dot"></span></div>
 </div>
 <style>
-  body {{ margin:0; background:transparent; }}
+  body {{ margin:0; background:transparent; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }}
+  /* iframe엔 Streamlit 기본 표 CSS가 없어서 셀 테두리가 사라짐 → 되살림 */
+  #{carousel_id} table {{ border-collapse:collapse; color:{T['text']}; }}
+  #{carousel_id} table td, #{carousel_id} table th {{ border:1px solid {T['border']}; padding:3px 7px; }}
   #{carousel_id} .track {{ display:flex; overflow-x:auto; scroll-snap-type:x mandatory; overscroll-behavior-x:contain;
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }}
   #{carousel_id} .track::-webkit-scrollbar {{ display:none; }}
@@ -1388,7 +1374,7 @@ with tab_tx:
   }})();
 </script>
 """,
-            height=315,
+            height=590,
         )
 
     # ---- Account : Index (메인: 코스피/코스닥, 국내주식만) ----
