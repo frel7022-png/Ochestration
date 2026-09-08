@@ -314,4 +314,12 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   첫 스냅샷 대비 리베이스. `fund_nav_history.csv`(new1 17일치 공유), `compute_vip_vs_orchestra(iva)`,
   `compute_index_vs_account(..., fund_nav_hist=...)` → index에 `펀드` 컬럼. 기준가는 자동 조회 없이
   세션이 채팅으로 받아 CSV에 직접 append.
-- **§4 수수료 모델 / §5 P&L Actions**: (진행 예정)
+- **§4 수수료 모델**(new1 §6-4): `apply_transaction` — 매수 수수료 0, 매도 시 매도금액 × fee_rate 를
+  예수금과 그 건 realized 양쪽에서 차감. `account_state.수수료율_원화` 0.000579 → **0.002**
+  (수수료율_달러는 휴면). 전체 재생 → 매도 14건 실현손익 재기록.
+- **§5 P&L Actions**(new1 §6-20): Realized P&L 밑 `st.expander("P&L Actions")`.
+  `_all_cycles`/`_cycle_bucket`/`compute_pnl_actions` — 사이클(진입~전량청산) 단위로 FA(1매수 전량)/
+  MO(부분매도 있음)/MA(물타기 전량) 3버킷. 표(이름/실현/비중/손익률) + 도넛(FA 빨강/MO 녹색/MA 파랑,
+  글씨 하양) + 상태표(Numbers/Ratio) + Watering 상세(흡수율·시드 배수). USD 없어 new1 그대로 이식.
+- **결과**: meritz Analysis 탭이 new1과 사실상 동일한 포맷. 포트폴리오 탭은 관심종목 스크리너
+  4개(Fishing/Volume/Foreigner/포프)만 빠짐 — Supabase 파이프라인에 묶인 거라 이식 안 함(사용자 결정).

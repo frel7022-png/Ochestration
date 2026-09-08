@@ -33,12 +33,13 @@ from portfolio_core import (
     load_bigcap_history, synthetic_kospi_ex_bigcap,
     snapshot_bigcap_history, fetch_bigcap_quotes,
     compute_index_vs_account, _index_day_moves,
-    load_fund_nav_history, compute_vip_vs_orchestra,
+    load_fund_nav_history, compute_vip_vs_orchestra, compute_pnl_actions,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
 DOWN_COLOR = "#2b6cd4"  # 하락/손실 = 파랑
 NEW_COLOR = "#22c55e"   # 초록 — 민감도 그래프 "5일" 선 색
+_PA_COLORS = {"FA": UP_COLOR, "MO": "#22c55e", "MA": DOWN_COLOR}  # P&L Actions: FA 빨강 / MO 녹색 / MA 파랑
 KOSPI_COLOR = "#f59e0b"   # 지수 대비 계좌 그래프: 코스피 참조선(앰버)
 KOSDAQ_COLOR = "#14b8a6"  # 코스닥 참조선(틸)
 CASH_LABEL = "현금(예수금)"
@@ -1079,6 +1080,120 @@ with tab_tx:
             "scrollZoom": False,
             "doubleClick": False,
         })
+
+    # ---- P&L Actions (new1 §6-20): 실현손익을 매매 스타일 FA/MO/MA로 해부 ----
+    with st.expander("P&L Actions", expanded=False):
+        pa = compute_pnl_actions(tx, holdings)
+        if not pa["baskets"]:
+            st.caption("완료된 매매 사이클이 없어요.")
+        else:
+            bk, pst, wd = pa["baskets"], pa["status"], pa["watering"]
+
+            def _pct(v):
+                return "—" if v is None else f"{v:+.2f}%"
+
+            def _plcol(v):
+                return DOWN_COLOR if v is not None and v < 0 else UP_COLOR
+
+            _lab = ["FA", "MO", "MA"]
+            _fullname = {"FA": "FA (First in, All out)", "MO": "MO (Multiple Out)",
+                         "MA": "MA (Multiple in, All out)"}
+            _td = "white-space:nowrap"
+            _trs = "".join(
+                f"<tr><td style='color:{_PA_COLORS[b]};font-weight:700;{_td}'>{_fullname[b]}</td>"
+                f"<td style='text-align:right;{_td}'>{bk[b]['realized']:,.0f}</td>"
+                f"<td style='text-align:right;{_td}'>{bk[b]['pct']:.1f}%</td>"
+                f"<td style='text-align:right;{_td}'>{bk[b]['avg_pct']:+.2f}%</td></tr>"
+                for b in _lab
+            )
+            st.markdown(
+                "<div style='overflow-x:auto'>"
+                "<table style='width:100%;font-size:11px;border-collapse:collapse;margin:0 0 4px'>"
+                f"<tr style='font-size:10px;color:{T['muted2']}'>"
+                f"<th style='text-align:left'>&nbsp;</th><th style='text-align:right;{_td}'>실현</th>"
+                f"<th style='text-align:right'>비중</th><th style='text-align:right;{_td}'>손익률</th></tr>"
+                + _trs
+                + f"<tr style='border-top:1px solid {T['border']};color:{T['text']};font-weight:700'>"
+                  f"<td style='{_td}'>Total</td><td style='text-align:right;{_td}'>{pa['total']:,.0f}</td>"
+                  "<td style='text-align:right'>100%</td><td style='text-align:right'>—</td></tr>"
+                "</table></div>",
+                unsafe_allow_html=True,
+            )
+
+            if any(bk[b]["realized"] < 0 for b in _lab):
+                st.caption("버킷 중 순손실이 있어 도넛 생략 — 위 표 참고.")
+            else:
+                fig_d = go.Figure(go.Pie(
+                    labels=_lab, values=[bk[b]["realized"] for b in _lab],
+                    hole=0.38, sort=False, direction="clockwise",
+                    marker=dict(colors=[_PA_COLORS[b] for b in _lab]),
+                    texttemplate="%{label} %{percent}", textposition="inside",
+                    insidetextorientation="horizontal", textfont=dict(color="#ffffff", size=12),
+                    automargin=True,
+                    hovertemplate="%{label}  %{value:,.0f}원 · %{percent}<extra></extra>",
+                    hoverlabel=dict(bgcolor="#ffffff", bordercolor=T["border"],
+                                    font=dict(color=T["text"], size=12)),
+                ))
+                fig_d.update_layout(
+                    height=250, margin=dict(l=10, r=10, t=10, b=10),
+                    paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                    font=dict(color=T["text"], size=11), showlegend=False,
+                    uniformtext=dict(mode="hide", minsize=9),
+                )
+                components.html(
+                    "<style>body{margin:0;background:transparent}</style>"
+                    + fig_d.to_html(include_plotlyjs="cdn", full_html=False, default_width="100%",
+                                    config={"displayModeBar": False, "responsive": True}),
+                    height=260,
+                )
+
+            _tot = pst["n_total"]
+            fa_n, ma_n, mo_n = pst["FA"][0], pst["MA"][0], pst["MO"][0]
+            h_n, opn_n = pst["holds"]
+            w_n, _ = pst["watering"]
+
+            def _sr(label, num, ratio):
+                return (f"<tr><td style='color:{T['muted']};{_td}'>{label}</td>"
+                        f"<td style='text-align:right;{_td}'>{num}</td>"
+                        f"<td style='text-align:right;color:{T['muted2']};{_td}'>{ratio}</td></tr>")
+
+            def _ratio_pl(n, tot_, pl):
+                c = _plcol(pl)
+                return (f"{n / tot_ * 100:.1f}%(<span style='color:{c}'>"
+                        f"{'—' if pl is None else f'{pl:+.2f}%'}</span>)")
+
+            rows = (
+                _sr("총 횟수", _tot, "—")
+                + _sr("FA", f"{fa_n}/{_tot}", f"{fa_n / _tot * 100:.1f}%")
+                + _sr("MA", f"{ma_n}/{_tot}", f"{ma_n / _tot * 100:.1f}%")
+                + _sr("MO", f"({pst['MO_closed']}/{mo_n})/{_tot}", f"{mo_n / _tot * 100:.1f}%")
+                + _sr("Holds", f"{h_n}/{opn_n}", _ratio_pl(h_n, opn_n, pst["holds_pl_pct"]))
+                + _sr("Watering", f"{w_n}/{opn_n}", _ratio_pl(w_n, opn_n, pst["watering_pl_pct"]))
+            )
+            st.markdown(
+                "<div style='overflow-x:auto'>"
+                "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:6px 0 0'>"
+                f"<tr style='font-size:10px;color:{T['muted2']}'>"
+                "<th style='text-align:left'>&nbsp;</th><th style='text-align:right'>Numbers</th>"
+                "<th style='text-align:right'>Ratio(%)</th></tr>"
+                + rows + "</table></div>",
+                unsafe_allow_html=True,
+            )
+
+            _absorbed = "—" if wd["absorbed_pp"] is None else f"{wd['absorbed_pp']:+.2f}%p"
+            _mult = "—" if wd["seed_mult"] is None else f"×{wd['seed_mult']:.2f}"
+            _pf = "" if wd["pl_first_pct"] is None else f" (최초 진입가 기준 {wd['pl_first_pct']:+.2f}%)"
+            st.markdown(
+                f"<div style='font-size:11px;color:{T['muted']};margin:6px 0 0'>"
+                f"<b>Watering</b> {wd['n_stock']}종목에 물타기(추가매수) {wd['n_extra_buys']}회 진행 중</div>"
+                f"<div style='font-size:11px;color:{T['muted']};margin:1px 0'>"
+                f"총 손익률 <b style='color:{_plcol(wd['pl_avg_pct'])}'>{_pct(wd['pl_avg_pct'])}</b>"
+                f"<span style='color:{T['muted2']}'>{_pf}</span></div>"
+                f"<div style='font-size:11px;color:{T['muted']};margin:1px 0 2px'>"
+                f"물타기 흡수율 <b style='color:{UP_COLOR}'>{_absorbed}</b> · "
+                f"시드 {wd['seed_first']:,.0f}원 → {wd['seed_now']:,.0f}원 <b>({_mult})</b></div>",
+                unsafe_allow_html=True,
+            )
 
     st.divider()
 
