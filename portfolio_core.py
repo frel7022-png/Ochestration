@@ -632,18 +632,18 @@ def compute_sector_weights(df: pd.DataFrame) -> dict:
 def apply_transaction(holdings: pd.DataFrame, state: dict, name: str, kind: str, qty: float, price: float,
                        code_cache: dict | None = None, sector_cache: dict | None = None,
                        fee_rate: float = 0.0, currency: str = "원", fx_rate: float = 1.0):
-    """fee_rate: 거래대금(원화 환산) 대비 수수료+세금 추정 비율.
-    currency/fx_rate: "USD" 종목은 price가 현지통화(달러) 기준이고, fx_rate로 원화 환산해서
-    예수금(원화)에 반영한다. 평단가/현재가는 항상 종목의 원래 통화로 저장하고(달러는 달러로
-    표시), 원화 환산 매입원가만 "매입금액KRW"에 누적해서 손익 계산에 쓴다."""
+    """fee_rate: **매도 시** 매도금액 대비 세금(거래세) 비율 (예: 0.002 = 0.2%, 메리츠 국내주식).
+    매수엔 수수료를 매기지 않는다. 매도 시 fee = 매도금액 × fee_rate 를 예수금과 그 건
+    실현손익 양쪽에서 함께 차감(new1 §6-4, 2026-09-08 — 이전엔 매수·매도 균일 비율 + 실현손익
+    미반영이라 앱 실현손익이 증권사보다 컸음). currency/fx_rate: 레드와이어 배제 후 항상 "원"/1
+    (죽은 인자로 남김). 매입원가는 "매입금액KRW"에 누적."""
     holdings = holdings.copy()
     realized = None
     match = holdings.index[holdings["종목명"] == name]
     amount_krw = qty * price * fx_rate
-    fee = amount_krw * fee_rate
 
     if kind == "매수":
-        state["cash"] -= (amount_krw + fee)
+        state["cash"] -= amount_krw
         if len(match):
             i = match[0]
             old_qty = float(holdings.loc[i, "수량"])
@@ -668,13 +668,14 @@ def apply_transaction(holdings: pd.DataFrame, state: dict, name: str, kind: str,
             })
             holdings = pd.concat([holdings, pd.DataFrame([new_row])], ignore_index=True)
     else:  # 매도
+        fee = amount_krw * fee_rate
         state["cash"] += (amount_krw - fee)
         if len(match):
             i = match[0]
             old_qty = float(holdings.loc[i, "수량"])
             old_cost_krw = float(holdings.loc[i, "매입금액KRW"])
             cost_krw_per_share = old_cost_krw / old_qty if old_qty else 0
-            realized = amount_krw - cost_krw_per_share * qty  # 원화 기준(가격+환차 합산) 실현손익
+            realized = amount_krw - cost_krw_per_share * qty - fee  # 세금 차감 후 실현손익
             new_qty = old_qty - qty
             if new_qty <= 0:
                 holdings = holdings.drop(index=i).reset_index(drop=True)
