@@ -1210,6 +1210,13 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
         if me.empty:
             return empty
 
+    # 내 계좌 누적을 anchor일(첫 스냅샷) = 0 으로 리베이스 (new1 §6-17, 2026-09-08). 코스피/코스닥/
+    # 혼합지수/내 주식(Rs)이 전부 anchor 기준이라 "8/14부터 시장 대비"가 정합이 되게. 절대
+    # 계좌수익은 요약카드에 그대로. meritz는 최초자본 리셋 후 8/14 계좌수익이 ~0이라 변화 거의 없음.
+    if not me.empty:
+        _acc0 = float(me["계좌수익"].iloc[0])
+        me["계좌수익"] = (1.0 + me["계좌수익"]) / (1.0 + _acc0) - 1.0
+
     wk = None if kospi_weight is None else min(max(float(kospi_weight), 0.0), 1.0)
 
     bench = idx_cum.copy()
