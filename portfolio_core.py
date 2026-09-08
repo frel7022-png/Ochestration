@@ -789,6 +789,17 @@ def save_fund_nav_history(df: pd.DataFrame) -> None:
     df.to_csv(FUND_NAV_HISTORY_FILE, index=False)
 
 
+BOTH_ACCOUNTS_FILE = HERE / "both_accounts.csv"  # 날짜, orchestra, orchestration — 두 앱 계좌수익(8/14=0)
+
+
+def load_both_accounts() -> pd.DataFrame:
+    """new1(orchestra) + meritz(orchestration) 계좌수익 시계열(anchor일=0 리베이스, 소수).
+    new1의 `sync_both_accounts.py`가 두 레포에 똑같이 써준다(new1 §6-21). 없으면 빈 DataFrame."""
+    if BOTH_ACCOUNTS_FILE.exists():
+        return pd.read_csv(BOTH_ACCOUNTS_FILE)
+    return pd.DataFrame(columns=["날짜", "orchestra", "orchestration"])
+
+
 def snapshot_fund_nav_history(nav: float, on_date: str | None = None) -> None:
     """펀드 기준가 스냅샷(같은 날짜 덮어씀). 자동 조회 경로가 없어서(네이버 펀드 API 폐지)
     사용자가 메리츠 앱에서 읽어 채팅으로 주면 세션이 fund_nav_history.csv에 직접 append.
@@ -1337,29 +1348,49 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
             "sensitivity_basis": "혼합" if wk is not None else "코스피"}
 
 
-def compute_vip_vs_orchestra(iva: dict) -> dict:
-    """new1 §6-21 'VIP vs Orchestration' 전용 패널 데이터. iva = compute_index_vs_account 결과
-    (fund_nav_hist 넘겨서 index에 '펀드' 컬럼 있어야 함 — 없으면 {} 반환, 패널 안 그림).
-    둘 다 anchor일(8/14) = 0 리베이스:
-      - VIP        = idx_cum['펀드'] (이미 anchor 대비 누적)
-      - Orchestration = me['계좌수익']을 첫 스냅샷 대비로 (1+r_t)/(1+r_0)-1 재기준화
-    반환: vip_line/orch_line = [(날짜, 누적)], vip/orch = (누적, 당일).  펀드 없으면 {}."""
+def compute_vip_vs_orchestra(iva: dict, both_accounts: pd.DataFrame | None = None) -> dict:
+    """new1 §6-21 'VIP vs Orchestra vs Orchestration' 패널 데이터. iva = compute_index_vs_account
+    결과(fund_nav_hist 넘겨 index에 '펀드' 컬럼 있어야 함 — 없으면 {}).
+    세 선 모두 anchor일(8/14) = 0 리베이스:
+      - VIP           = idx_cum['펀드']
+      - Orchestra     = new1 계좌. both_accounts['orchestra'] 우선, 없으면 이 앱 me['계좌수익'] 재기준화
+      - Orchestration = meritz 계좌. both_accounts['orchestration']. 없으면 orchn_line=None
+    반환: {vip_line/orch_line/orchn_line: [(날짜,누적)], vip/orch/orchn: (누적, 당일)}. 펀드 없으면 {}."""
     idx_cum, me, latest = iva.get("index"), iva.get("me"), iva.get("latest", {})
     if idx_cum is None or me is None or "펀드" not in getattr(idx_cum, "columns", []):
         return {}
     fser = pd.to_numeric(idx_cum["펀드"], errors="coerce")
     if fser.dropna().empty or me.empty:
         return {}
-    vip_line = [(str(d), float(v)) for d, v in zip(idx_cum["날짜"], fser) if pd.notna(v)]
-    acct = pd.to_numeric(me["계좌수익"], errors="coerce")
-    r0 = float(acct.iloc[0]) if pd.notna(acct.iloc[0]) else 0.0
-    orch_reb = (1.0 + acct) / (1.0 + r0) - 1.0
-    orch_line = [(str(d), float(v)) for d, v in zip(me["날짜"], orch_reb) if pd.notna(v)]
+
+    def _ser_to_line(dates, vals):
+        return [(str(d), float(v)) for d, v in zip(dates, vals) if pd.notna(v)]
+
+    def _last_day(line):
+        return (line[-1][1] - line[-2][1]) if len(line) >= 2 else None
+
+    vip_line = _ser_to_line(idx_cum["날짜"], fser)
     vip_cum = vip_line[-1][1] if vip_line else None
+
+    ba = both_accounts if (both_accounts is not None and not both_accounts.empty) else None
+    if ba is not None and "orchestra" in ba.columns:
+        orch_line = _ser_to_line(ba["날짜"].astype(str), pd.to_numeric(ba["orchestra"], errors="coerce"))
+    else:
+        acct = pd.to_numeric(me["계좌수익"], errors="coerce")
+        r0 = float(acct.iloc[0]) if pd.notna(acct.iloc[0]) else 0.0
+        orch_line = _ser_to_line(me["날짜"], (1.0 + acct) / (1.0 + r0) - 1.0)
     orch_cum = orch_line[-1][1] if orch_line else None
-    return {"vip_line": vip_line, "orch_line": orch_line,
+
+    orchn_line = orchn_cum = orchn_day = None
+    if ba is not None and "orchestration" in ba.columns:
+        orchn_line = _ser_to_line(ba["날짜"].astype(str), pd.to_numeric(ba["orchestration"], errors="coerce"))
+        orchn_cum = orchn_line[-1][1] if orchn_line else None
+        orchn_day = _last_day(orchn_line)
+
+    return {"vip_line": vip_line, "orch_line": orch_line, "orchn_line": orchn_line,
             "vip": (vip_cum, latest.get("펀드", (None, None))[1]),
-            "orch": (orch_cum, latest.get("계좌", (None, None))[1])}
+            "orch": (orch_cum, _last_day(orch_line) if ba is not None else latest.get("계좌", (None, None))[1]),
+            "orchn": (orchn_cum, orchn_day)}
 
 
 # ------------------------------------------------------------------ #
