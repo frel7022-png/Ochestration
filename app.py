@@ -1061,18 +1061,23 @@ with tab_tx:
     c3 = UP_COLOR if cap_return3 >= 0 else DOWN_COLOR
     s3 = "+" if cap_return3 >= 0 else ""
 
-    total_realized = pd.to_numeric(tx.loc[tx["구분"] == "매도", "실현손익"], errors="coerce").sum()
+    _sell3 = tx[tx["구분"] == "매도"]
+    total_realized = pd.to_numeric(_sell3["실현손익"], errors="coerce").sum()
     rc = UP_COLOR if total_realized >= 0 else DOWN_COLOR
     rs = "+" if total_realized >= 0 else ""
+    # 누적 세금 = Σ 매도금액 × fee_rate_krw (매도세 0.2%). 실현손익은 이미 이걸 뺀 값.
+    total_tax3 = (pd.to_numeric(_sell3["수량"], errors="coerce")
+                  * pd.to_numeric(_sell3["단가"], errors="coerce")).sum() * state.get("fee_rate_krw", 0.0)
 
     st.markdown(f"""
     <div class="summary-box">
-        <div class="summary-label">최초 자본 10,000,000원 대비</div>
+        <div class="summary-label">최초 자본 {state['initial']:,.0f}원 대비</div>
         <span class="summary-main" style="color:{c3}">{s3}{cap_return3:,.0f}원</span>
         <span class="summary-sub" style="color:{c3}">{s3}{cap_return_pct3:.2f}%</span>
         <div class="summary-grid">
             <div>현재 총자산<b>{total_assets3:,.0f}원</b></div>
             <div>실현손익 누적<b style="color:{rc}">{rs}{total_realized:,.0f}원</b></div>
+            <div>누적 세금<b style="color:{DOWN_COLOR}">-{total_tax3:,.0f}원</b></div>
             <div>미실현 손실<b style="color:{DOWN_COLOR}">-{unreal3:,.0f}원</b></div>
         </div>
     </div>
@@ -1177,28 +1182,29 @@ with tab_tx:
             if any(bk[b]["realized"] < 0 for b in _lab):
                 st.caption("버킷 중 순손실이 있어 도넛 생략 — 위 표 참고.")
             else:
+                # 작은 슬라이스(비중 < 12%)는 라벨 빈 문자열 — 삐져나옴 방지. domain 꽉 채워 정중앙.
+                _slice_txt = [(f"{b} {bk[b]['pct']:.1f}%" if bk[b]["pct"] >= 12 else "") for b in _lab]
                 fig_d = go.Figure(go.Pie(
                     labels=_lab, values=[bk[b]["realized"] for b in _lab],
-                    hole=0.38, sort=False, direction="clockwise",
+                    hole=0.40, sort=False, direction="clockwise",
                     marker=dict(colors=[_PA_COLORS[b] for b in _lab]),
-                    texttemplate="%{label} %{percent}", textposition="inside",
+                    text=_slice_txt, textinfo="text", textposition="inside",
                     insidetextorientation="horizontal", textfont=dict(color="#ffffff", size=12),
-                    automargin=False,  # 바깥 라벨 자리 예약 안 함 → 도넛이 중앙에
+                    domain=dict(x=[0, 1], y=[0, 1]),
                     hovertemplate="%{label}  %{value:,.0f}원 · %{percent}<extra></extra>",
                     hoverlabel=dict(bgcolor="#ffffff", bordercolor=T["border"],
                                     font=dict(color=T["text"], size=12)),
                 ))
                 fig_d.update_layout(
-                    height=250, margin=dict(l=10, r=10, t=10, b=10),
+                    height=240, margin=dict(l=6, r=6, t=6, b=6),
                     paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
                     font=dict(color=T["text"], size=11), showlegend=False,
-                    uniformtext=dict(mode="hide", minsize=13),  # 작은 슬라이스 라벨은 숨김(삐져나옴 방지)
                 )
                 components.html(
                     "<style>body{margin:0;background:transparent}</style>"
                     + fig_d.to_html(include_plotlyjs="cdn", full_html=False, default_width="100%",
                                     config={"displayModeBar": False, "responsive": True}),
-                    height=260,
+                    height=244,
                 )
 
             _tot = pst["n_total"]
@@ -1515,10 +1521,10 @@ with tab_tx:
   #{carousel_id} .track::-webkit-scrollbar {{ display:none; }}
   #{carousel_id} .slide {{ flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always;
     display:flex; flex-direction:column; justify-content:center; padding-top:4px; box-sizing:border-box; }}
-  #{carousel_id} .dots {{ display:flex; justify-content:center; gap:10px; padding:5px 0 0; }}
-  #{carousel_id} .dot {{ width:8px; height:8px; border-radius:50%; background:{T['muted2']};
-    opacity:.35; transition:opacity .18s, background .18s; }}
-  #{carousel_id} .dot.on {{ opacity:.75; background:{T['muted']}; }}
+  #{carousel_id} .dots {{ display:flex; justify-content:center; gap:11px; padding:8px 0 4px; }}
+  #{carousel_id} .dot {{ width:9px; height:9px; border-radius:50%; background:{T['muted2']};
+    opacity:.45; cursor:pointer; transition:opacity .18s, background .18s; }}
+  #{carousel_id} .dot.on {{ opacity:1; background:{T['text']}; }}
 </style>
 <script>
   (function() {{
@@ -1553,7 +1559,7 @@ with tab_tx:
   }})();
 </script>
 """,
-            height=550,
+            height=565,
         )
 
     # ---- KOSPI 2-Track Trend: 일반(빨강) vs 삼성·삼성우·하이닉스 제외(파랑), 실제 지수 포인트.
@@ -1649,14 +1655,12 @@ with tab_tx:
                 hovertemplate="<b>VIP</b> %{y:+.2%}<extra></extra>"))
             fig_vo.add_trace(go.Scatter(
                 x=[d for d, _ in vo["orch_line"]], y=[y for _, y in vo["orch_line"]],
-                name="Orchestra", mode="lines+markers", line=dict(color=UP_COLOR, width=2.4),
-                marker=dict(size=5),
+                name="Orchestra", mode="lines", line=dict(color=UP_COLOR, width=1.8),
                 hovertemplate="<b>Orchestra</b> %{y:+.2%}<extra></extra>"))
             if vo.get("orchn_line"):
                 fig_vo.add_trace(go.Scatter(
                     x=[d for d, _ in vo["orchn_line"]], y=[y for _, y in vo["orchn_line"]],
-                    name="Orchestration", mode="lines+markers", line=dict(color=NEW_COLOR, width=2.4),
-                    marker=dict(size=5),
+                    name="Orchestration", mode="lines", line=dict(color=NEW_COLOR, width=1.8),
                     hovertemplate="<b>Orchestration</b> %{y:+.2%}<extra></extra>"))
             fig_vo.add_hline(y=0, line_dash="dash", line_color=T["muted2"], line_width=1)
             fig_vo.update_layout(
