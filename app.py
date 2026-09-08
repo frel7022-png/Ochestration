@@ -28,7 +28,7 @@ from portfolio_core import (
     get_holding_trade_summary, get_holding_trade_summary_all_time,
     get_holding_trade_points, get_holding_avg_price_path,
     load_index_history, snapshot_index_history, append_capture_anomalies,
-    load_dom_asset_history, snapshot_dom_asset_history,
+    load_dom_asset_history, snapshot_dom_asset_history, _cash_by_date, _cash_on,
     load_market_cache, refresh_market_cache,
     load_bigcap_history, synthetic_kospi_ex_bigcap,
     snapshot_bigcap_history, fetch_bigcap_quotes,
@@ -613,12 +613,20 @@ with tab_port:
         today_tx.loc[today_tx["구분"] == "매도", "실현손익"], errors="coerce"
     ).sum()
 
-    # 어제 대비 총자산 변화(직전 asset_history 스냅샷 대비, new1 §4). 이 화면은 포트폴리오
-    # 현황용이라 "최초자본 대비 누적손익"(그건 Analysis 탭에도 나옴) 대신 전일 대비를 보여준다.
-    # 오늘 실현이익도 총자산에 이미 반영돼 자동으로 +로 잡힘.
-    _hist = load_history()
-    _prev = _hist[_hist["날짜"].astype(str) < today_str] if not _hist.empty else _hist
-    prev_total = float(_prev["총자산"].iloc[-1]) if not _prev.empty else state["initial"]
+    # 어제 대비 "국내" 총자산 변화(new1 §4). asset_history.csv 히스토리엔 레드와이어가 섞여
+    # 있던 시절 값이라(2026-09-08 RDW 배제) 그걸 그대로 쓰면 오늘 total_assets(국내만)와 빼서
+    # RDW 값(약 163만원)만큼 큰 음수가 나온다. → dom_asset_history(국내주식평가, RDW 제외,
+    # 히스토리 일관) + 그날 예수금으로 "국내 총자산"을 재구성해 비교한다. 오늘 실현이익도
+    # 총자산에 이미 반영돼 자동으로 +로 잡힘.
+    _dh = load_dom_asset_history()
+    _dprev = _dh[_dh["날짜"].astype(str) < today_str] if not _dh.empty else _dh
+    if not _dprev.empty:
+        _cm = _cash_by_date(tx, state["initial"], state.get("fee_rate_krw", 0.0),
+                            state.get("fee_rate_usd", 0.0))
+        _pdate = str(_dprev["날짜"].iloc[-1])
+        prev_total = float(_dprev["국내주식평가"].iloc[-1]) + _cash_on(_cm, _pdate, state["initial"])
+    else:
+        prev_total = state["initial"]
     day_change = total_assets - prev_total
     day_color = UP_COLOR if day_change > 0 else (DOWN_COLOR if day_change < 0 else T["muted"])
     day_sign = "+" if day_change > 0 else ""
