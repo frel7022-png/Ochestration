@@ -1330,7 +1330,7 @@ with tab_tx:
             )
 
         idx_table_html = (
-            "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:-2px 0 4px'>"
+            "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:3px 0 4px'>"
             f"<tr style='color:{T['muted2']};font-size:10px'>"
             "<th style='text-align:left'>&nbsp;</th><th style='text-align:right'>누적</th>"
             "<th style='text-align:right'>5일</th><th style='text-align:right'>당일</th></tr>"
@@ -1513,7 +1513,8 @@ with tab_tx:
   #{carousel_id} .track {{ display:flex; overflow-x:auto; scroll-snap-type:x mandatory; overscroll-behavior-x:contain;
     -webkit-overflow-scrolling:touch; scrollbar-width:none; }}
   #{carousel_id} .track::-webkit-scrollbar {{ display:none; }}
-  #{carousel_id} .slide {{ flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always; }}
+  #{carousel_id} .slide {{ flex:0 0 100%; min-width:0; scroll-snap-align:center; scroll-snap-stop:always;
+    display:flex; flex-direction:column; justify-content:center; padding-top:4px; box-sizing:border-box; }}
   #{carousel_id} .dots {{ display:flex; justify-content:center; gap:10px; padding:5px 0 0; }}
   #{carousel_id} .dot {{ width:8px; height:8px; border-radius:50%; background:{T['muted2']};
     opacity:.35; transition:opacity .18s, background .18s; }}
@@ -1555,14 +1556,8 @@ with tab_tx:
             height=550,
         )
 
-    # ---- Account : Index (메인: 코스피/코스닥) ----
-    st.markdown(f"##### Account : Index{_wtag}", unsafe_allow_html=True)
-    iva = compute_index_vs_account(tx, dom_hist, idx_hist, state["initial"],
-                                    state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
-                                    kospi_weight=wk, fund_nav_hist=load_fund_nav_history())
-    _render_iva_panel(iva, idx_hist, "코스피", "cwrap")
-
-    # ---- KOSPI 2-Track Trend: 일반(빨강) vs 삼성·삼성우·하이닉스 제외(파랑), 실제 지수 포인트 ----
+    # ---- KOSPI 2-Track Trend: 일반(빨강) vs 삼성·삼성우·하이닉스 제외(파랑), 실제 지수 포인트.
+    #      (2026-09-08: Account:Index 자리로 옮김 — Account:Index는 밑에서 expander로 접힘.) ----
     _bg_k = load_bigcap_history()
     if not idx_hist.empty and not _bg_k.empty:
         _ih = idx_hist.sort_values("날짜").reset_index(drop=True)
@@ -1594,6 +1589,17 @@ with tab_tx:
             dragmode=False,
         )
         st.plotly_chart(fig_k, use_container_width=True, config={"displayModeBar": False})
+
+    # ---- Account : Index (§6-17): 2026-09-08부터 expander(SamHynix extracted 위, 같은 포맷).
+    #      iva는 밑 VIP 패널도 쓰므로 expander 밖에서 계산. ----
+    iva = compute_index_vs_account(tx, dom_hist, idx_hist, state["initial"],
+                                    state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
+                                    kospi_weight=wk, fund_nav_hist=load_fund_nav_history())
+    with st.expander("Account : Index", expanded=False):
+        if _wtag:
+            st.markdown(f"<div style='margin:-4px 0 2px'>{_wtag.strip()}</div>",
+                        unsafe_allow_html=True)
+        _render_iva_panel(iva, idx_hist, "코스피", "cwrap")
 
     with st.expander("SamHYnix extracted", expanded=False):
         st.markdown(
