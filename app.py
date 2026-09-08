@@ -33,6 +33,7 @@ from portfolio_core import (
     load_bigcap_history, synthetic_kospi_ex_bigcap,
     snapshot_bigcap_history, fetch_bigcap_quotes,
     compute_index_vs_account, _index_day_moves,
+    load_fund_nav_history, compute_vip_vs_orchestra,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
@@ -1390,7 +1391,7 @@ with tab_tx:
                 unsafe_allow_html=True)
     iva = compute_index_vs_account(tx, dom_hist, idx_hist, state["initial"],
                                     state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
-                                    kospi_weight=wk)
+                                    kospi_weight=wk, fund_nav_hist=load_fund_nav_history())
     _render_iva_panel(iva, idx_hist, "코스피", "cwrap")
 
     # ---- KOSPI 2-Track Trend: 일반(빨강) vs 삼성·삼성우·하이닉스 제외(파랑), 실제 지수 포인트 ----
@@ -1440,6 +1441,69 @@ with tab_tx:
                                                 state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0),
                                                 kospi_weight=wk)
             _render_iva_panel(_iva_ex, _syn, "삼성·하이닉스 제외", "cwrap_ex")
+
+    # ---- VIP vs Orchestration (new1 §6-21): VIP 가치투자 펀드 vs 내 계좌, 둘 다 8/14 = 0 ----
+    with st.expander("VIP vs Orchestration", expanded=False):
+        vo = compute_vip_vs_orchestra(iva)
+        if not vo:
+            st.caption("fund_nav_history.csv 비어있음 — 세션에 펀드 기준가를 알려주세요.")
+        else:
+            v_cum, v_day = vo["vip"]
+            o_cum, o_day = vo["orch"]
+
+            def _voc(o, v):   # Orchestration이 VIP 이기면 빨강 / 지면 파랑
+                if o is None or v is None:
+                    return T["text"]
+                return UP_COLOR if o >= v else DOWN_COLOR
+
+            def _vop(x):
+                return "—" if x is None else f"{x * 100:+.2f}%"
+
+            st.markdown(
+                "<table style='width:100%;font-size:12px;border-collapse:collapse;margin:2px 0 6px'>"
+                f"<tr style='color:{T['muted2']};font-size:10px'>"
+                "<th style='text-align:left'>&nbsp;</th><th style='text-align:right'>누적</th>"
+                "<th style='text-align:right'>당일</th></tr>"
+                f"<tr><td style='color:{DOWN_COLOR}'>● VIP</td>"
+                f"<td style='text-align:right;color:{T['text']}'>{_vop(v_cum)}</td>"
+                f"<td style='text-align:right;color:{T['text']}'>{_vop(v_day)}</td></tr>"
+                f"<tr><td style='color:{UP_COLOR}'>● Orchestration</td>"
+                f"<td style='text-align:right;color:{_voc(o_cum, v_cum)}'>{_vop(o_cum)}</td>"
+                f"<td style='text-align:right;color:{_voc(o_day, v_day)}'>{_vop(o_day)}</td></tr>"
+                "</table>",
+                unsafe_allow_html=True,
+            )
+
+            fig_vo = go.Figure()
+            fig_vo.add_trace(go.Scatter(
+                x=[d for d, _ in vo["vip_line"]], y=[y for _, y in vo["vip_line"]],
+                name="VIP", mode="lines", line=dict(color=DOWN_COLOR, width=1.8),
+                hovertemplate="<b>VIP</b> %{y:+.2%}<extra></extra>"))
+            fig_vo.add_trace(go.Scatter(
+                x=[d for d, _ in vo["orch_line"]], y=[y for _, y in vo["orch_line"]],
+                name="Orchestration", mode="lines+markers", line=dict(color=UP_COLOR, width=2.4),
+                marker=dict(size=5),
+                hovertemplate="<b>Orchestration</b> %{y:+.2%}<extra></extra>"))
+            fig_vo.add_hline(y=0, line_dash="dash", line_color=T["muted2"], line_width=1)
+            fig_vo.update_layout(
+                height=250, margin=dict(l=44, r=8, t=8, b=26),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+                font=dict(color=T["text"], size=11),
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, font=dict(size=10)),
+                hovermode="x unified",
+                hoverlabel=dict(bgcolor=T["card"], bordercolor=T["border"],
+                                font=dict(size=11, color=T["text"])),
+                xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+                yaxis=dict(showgrid=True, gridcolor=T["border"], zeroline=False, tickformat=".1%",
+                           tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+                dragmode=False,
+            )
+            components.html(
+                "<style>body{margin:0;background:transparent}</style>"
+                + fig_vo.to_html(include_plotlyjs="cdn", full_html=False, default_width="100%",
+                                 config={"displayModeBar": False, "responsive": True}),
+                height=262,
+            )
 
     st.divider()
 

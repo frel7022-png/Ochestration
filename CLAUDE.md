@@ -288,3 +288,30 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   **물타기 회복 종목 카드 옅은 녹색**(`.stock-card.watered-ok` — 현재 사이클 매수 2회+ &
   현재가 ≥ 최초진입가).
 - **미이식**: 외국인 보유율 배지(new1 §4). 사용자가 "외국인 제외" 명시.
+
+### 6-6. 2026-09-08 — 레드와이어(USD) 배제 + new1 최근 변경 대량 이식
+사용자: "국내주식만 new1처럼. 레드와이어는 잊자(묵혀둘 거)."
+- **§0 레드와이어 제거**: `transactions.csv`에서 레드와이어 8행 → `redwire_archive.csv`(앱 안 읽음).
+  **최초자본 10,000,000 → 8,000,000** (저번에 200만원을 달러로 환전 → RDW 위성계좌). 이제 전
+  거래 통화="원". 체크포인트 삭제 후 전체 재생. 통화/환율/`fee_rate_usd`/`fetch_usd_quotes`/
+  `apply_transaction` 통화분기/D0(RDW 순투입) = **죽은 코드로 남김**(USD 거래 0건이라 안 돎).
+- **§1 소규모**: 요약카드 "최초자본 대비" → **"어제 대비 ±N원"**(+빨강/−파랑). 단, asset_history
+  히스토리엔 RDW 섞인 값이라 `dom_asset_history(국내평가) + _cash_by_date(그날 예수금)`로
+  "국내 총자산"을 재구성해 비교. Holdings 타이틀 `(이익 N / 손실 M)`. 물타기 그래프 x축
+  날짜 눈금(dtick 며칠). `synthetic_kospi_ex_bigcap` 기간매칭 수정(bigcap 중간날 누락 시 폭주 방지)
+  + `ingest_daily.py`에 bigcap lock-step 스냅샷. `resolve_trading_date()` 신설 + 스냅샷 5함수 통일.
+- **§2 DC/UC/even 캡처 재설계**(new1 §6-17 2026-09-07): **CR·국면막대·RP 전부 폐기.**
+  하락/상승/even 3버킷, DC/UC=Σ내당일/Σ벤치당일, even=e평균, ERA/PCT/evr 승률.
+  `compute_index_vs_account` 반환 = `cap{acct,stock}` / `n{down,up,even}` / `even_anomalies`.
+  `_render_iva_panel` = 캐러셀 1장 [5줄 표 + 선그래프], 2장 [캡처 표 3개(_cap_tbl) + 일별 캡처 막대].
+- **Realized P&L 미실현손실 선**: `asset_history.csv`를 국내 전용으로 재생성(각 날짜까지 재생 +
+  국내 종목 히스토리 종가). 1회성 데이터 정정.
+- **index_history.csv 정정**: 9/4~9/7이 앱 새로고침 stale 값으로 오염(9/7 = 9/4 복제)돼
+  new1과 어긋나 있던 것 → `backfill_index_dom_history.py`로 공식 종가 재소급.
+- **§3 VIP vs Orchestration**(new1 §6-21): SamHynix extracted 밑 `st.expander("VIP vs Orchestration")`.
+  표 2×2(VIP / Orchestration × 누적/당일, Orchestration 셀은 VIP 이기면 빨강/지면 파랑) +
+  그래프(VIP 파랑 / Orchestration 빨강), 둘 다 8/14=0. Orchestration = 내 계좌(예수금 포함),
+  첫 스냅샷 대비 리베이스. `fund_nav_history.csv`(new1 17일치 공유), `compute_vip_vs_orchestra(iva)`,
+  `compute_index_vs_account(..., fund_nav_hist=...)` → index에 `펀드` 컬럼. 기준가는 자동 조회 없이
+  세션이 채팅으로 받아 CSV에 직접 append.
+- **§4 수수료 모델 / §5 P&L Actions**: (진행 예정)
