@@ -18,7 +18,7 @@ app.py(웹 화면)와 ingest_daily.py(일일 매매일지 반영 스크립트)�
 import ast
 import io
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -79,6 +79,21 @@ def now_kst() -> datetime:
 
 def today_kst_str() -> str:
     return now_kst().strftime("%Y-%m-%d")
+
+
+def resolve_trading_date() -> str:
+    """"이 시점이 대표하는 거래일"을 반환(new1 §6-16 포팅). 장 시작 전(오전 9시 이전)에
+    스냅샷을 찍으면 그 시세는 "오늘"이 아니라 "직전 거래일" 종가이므로 하루 전으로 보정하고,
+    그게 주말이면 가장 최근 평일로 한 번 더 보정한다. 5개 스냅샷 함수(history/sector/index/
+    dom_asset/bigcap)가 전부 이걸 써서 서로 같은 '대표 거래일' 기준을 갖게 한다 — 예전엔
+    전부 today_kst_str()이라 서로는 일관됐지만 주말·장 시작 전엔 달력상 오늘로 찍혀서
+    벤치당일이 어긋나는 여지가 있었음(new1에서 실제로 '혼합지수 당일 0.00%'로 나타남)."""
+    d = now_kst().date()
+    if now_kst().hour < 9:
+        d -= timedelta(days=1)
+    while d.weekday() >= 5:  # 토(5)/일(6) → 가장 최근 평일
+        d -= timedelta(days=1)
+    return d.strftime("%Y-%m-%d")
 
 
 def now_kst_str() -> str:
@@ -216,7 +231,7 @@ def save_history(df: pd.DataFrame) -> None:
 
 def snapshot_history(total_assets: float, adjusted_assets: float, on_date: str | None = None) -> None:
     hist = load_history()
-    d = on_date or today_kst_str()
+    d = on_date or resolve_trading_date()
     hist = hist[hist["날짜"] != d]
     hist = pd.concat([hist, pd.DataFrame([{"날짜": d, "총자산": total_assets, "조정자산": adjusted_assets}])])
     hist = hist.sort_values("날짜")
@@ -238,7 +253,7 @@ def snapshot_sector_history(weights: dict, on_date: str | None = None) -> None:
     if not weights:
         return
     hist = load_sector_history()
-    d = on_date or today_kst_str()
+    d = on_date or resolve_trading_date()
     hist = hist[hist["날짜"] != d]
     new_rows = pd.DataFrame([{"날짜": d, "섹터그룹": k, "비중": v} for k, v in weights.items()])
     hist = pd.concat([hist, new_rows], ignore_index=True)
@@ -753,7 +768,7 @@ def save_index_history(df: pd.DataFrame) -> None:
 def snapshot_index_history(kospi: float, kosdaq: float, on_date: str | None = None) -> None:
     if not kospi or not kosdaq or kospi <= 0 or kosdaq <= 0:
         return
-    d = on_date or today_kst_str()
+    d = on_date or resolve_trading_date()
     hist = load_index_history()
     hist = hist[hist["날짜"] != d]
     hist = pd.concat([hist, pd.DataFrame([{"날짜": d, "KOSPI": kospi, "KOSDAQ": kosdaq}])])
@@ -798,7 +813,7 @@ def snapshot_dom_asset_history(dom_stock_value_krw: float, on_date: str | None =
     """국내주식(통화=원)만의 평가금액 원화 합계를 오늘자로 스냅샷. 같은 날짜는 덮어씀."""
     if dom_stock_value_krw is None or dom_stock_value_krw < 0:
         return
-    d = on_date or today_kst_str()
+    d = on_date or resolve_trading_date()
     hist = load_dom_asset_history()
     hist = hist[hist["날짜"] != d]
     hist = pd.concat([hist, pd.DataFrame([{"날짜": d, "국내주식평가": float(dom_stock_value_krw)}])])
@@ -835,7 +850,7 @@ def snapshot_bigcap_history(prices: dict, on_date: str | None = None) -> None:
               if k in BIGCAP_CODES and v and float(v) > 0}
     if not prices:
         return
-    d = on_date or today_kst_str()
+    d = on_date or resolve_trading_date()
     hist = load_bigcap_history()
     hist = hist[hist["날짜"] != d]
     row = {"날짜": d}
@@ -880,25 +895,28 @@ def synthetic_kospi_ex_bigcap(index_hist: pd.DataFrame, bigcap_hist: pd.DataFram
     dates = h["날짜"].tolist()
 
     ex_level = [kospi[0] if kospi else None] + [None] * (len(h) - 1)
-    prev_closes = bg_by_date.get(dates[0])
     for i in range(1, len(h)):
         r_k = (kospi[i] / kospi[i - 1] - 1.0) if (kospi[i - 1] and kospi[i]) else 0.0
         cur = bg_by_date.get(dates[i])
-        if (cur and prev_closes and kospi[i]
-                and all(cur.get(n) for n in names) and all(prev_closes.get(n) for n in names)):
+        prev = bg_by_date.get(dates[i - 1])   # 바로 직전 '지수 날짜'의 대형주 종가 (last-seen 아님)
+        # 대형주 수익률 구간(dates[i-1]→dates[i])과 KOSPI 수익률 구간이 정확히 같아야 한다.
+        # 한쪽 날짜에 대형주 종가가 없으면(cron 누락으로 bigcap_history에 그날이 빠짐) 그 구간은
+        # 조정하지 않고 r_ex = r_k. 예전엔 prev를 "마지막으로 본 종가"로 들고 있어서, 중간에
+        # 하루가 비면 다음 날 대형주 '이틀치 수익률'을 KOSPI '하루치'에서 빼 ex 지수가 폭주했음
+        # (new1 §6-19, 2026-09-08 -10%까지 튐).
+        if (cur and prev and kospi[i]
+                and all(cur.get(n) for n in names) and all(prev.get(n) for n in names)):
             total_t = total0 * (kospi[i] / k0_lvl)
             w_sum, wr_sum = 0.0, 0.0
             for n in names:
                 wi = _BIGCAP_SHARES[n] * cur[n] / total_t
-                ri = cur[n] / prev_closes[n] - 1.0
+                ri = cur[n] / prev[n] - 1.0
                 w_sum += wi
                 wr_sum += wi * ri
             r_ex = (r_k - wr_sum) / (1.0 - w_sum) if w_sum < 0.999 else r_k
         else:
             r_ex = r_k
         ex_level[i] = ex_level[i - 1] * (1.0 + r_ex)
-        if cur and all(cur.get(n) for n in names):
-            prev_closes = cur
     h["KOSPI"] = ex_level
     return h
 

@@ -444,6 +444,17 @@ def _render_holding_detail(r: dict, tx: pd.DataFrame, T: dict):
     avg_x = list(avg_path["날짜"]) + [today]
     avg_y = list(avg_path["평단가"]) + [avg_price]
 
+    # x축 눈금: 매수 1건이고 진입일이 오늘과 하루 이내면 plotly가 날짜축을 "하루 미만" 범위로
+    # 보고 23:59:59.999 같은 시:분:초 눈금을 찍는다. dtick을 '며칠 단위'로 고정하고 범위를
+    # 살짝 넓혀 날짜 눈금만 2~4개 나오게 함(new1 §물타기 그래프).
+    _xs = pd.to_datetime([entry_date, today] + avg_x + list(buys["날짜"])
+                         + (list(sells["날짜"]) if not sells.empty else []), errors="coerce").dropna()
+    _xmin, _xmax = _xs.min(), _xs.max()
+    _span = max(int((_xmax - _xmin).days), 1)
+    _pad = pd.Timedelta(max(1, int(round(_span * 0.08))), "D")
+    _dtick_ms = max(1, int(round(_span / 4))) * 86_400_000
+    _xrange = [(_xmin - _pad).strftime("%Y-%m-%d"), (_xmax + _pad).strftime("%Y-%m-%d")]
+
     hover_price = "%{x}<br>%{y:,.2f}" + unit + "<extra></extra>" if is_usd else "%{x}<br>%{y:,.0f}" + unit + "<extra></extra>"
     hover_avg = ("%{x}<br>평단가 %{y:,.2f}" + unit + "<extra></extra>") if is_usd else ("%{x}<br>평단가 %{y:,.0f}" + unit + "<extra></extra>")
     hover_buy = ("%{x}<br>매수 %{y:,.2f}" + unit + " · %{customdata:.0f}주<extra></extra>") if is_usd else ("%{x}<br>매수 %{y:,.0f}" + unit + " · %{customdata:.0f}주<extra></extra>")
@@ -486,7 +497,8 @@ def _render_holding_detail(r: dict, tx: pd.DataFrame, T: dict):
         showlegend=True,
         legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5,
                     bgcolor="rgba(0,0,0,0)"),
-        xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True),
+        xaxis=dict(showgrid=False, tickfont=dict(size=9, color=T["muted"]), fixedrange=True,
+                   type="date", tickformat="%m/%d", dtick=_dtick_ms, range=_xrange),
         yaxis=dict(showgrid=True, gridcolor=T["border"], tickfont=dict(size=9, color=T["muted"]),
                    tickformat=(",.2f" if is_usd else ",.0f"), fixedrange=True),
         hovermode="closest",
@@ -595,19 +607,24 @@ with tab_port:
     stock_profit = stock_valuation - total_cost
     stock_profit_pct = (stock_profit / total_cost * 100) if total_cost else 0
 
-    capital_return = total_assets - state["initial"]
-    capital_return_pct = (capital_return / state["initial"] * 100) if state["initial"] else 0
-
     today_str = today_kst_str()
     today_tx = tx[tx["날짜"].astype(str) == today_str]
     daily_pnl = pd.to_numeric(
         today_tx.loc[today_tx["구분"] == "매도", "실현손익"], errors="coerce"
     ).sum()
 
+    # 어제 대비 총자산 변화(직전 asset_history 스냅샷 대비, new1 §4). 이 화면은 포트폴리오
+    # 현황용이라 "최초자본 대비 누적손익"(그건 Analysis 탭에도 나옴) 대신 전일 대비를 보여준다.
+    # 오늘 실현이익도 총자산에 이미 반영돼 자동으로 +로 잡힘.
+    _hist = load_history()
+    _prev = _hist[_hist["날짜"].astype(str) < today_str] if not _hist.empty else _hist
+    prev_total = float(_prev["총자산"].iloc[-1]) if not _prev.empty else state["initial"]
+    day_change = total_assets - prev_total
+    day_color = UP_COLOR if day_change > 0 else (DOWN_COLOR if day_change < 0 else T["muted"])
+    day_sign = "+" if day_change > 0 else ""
+
     color = UP_COLOR if stock_profit >= 0 else DOWN_COLOR
     sign = "+" if stock_profit >= 0 else ""
-    cap_color = UP_COLOR if capital_return >= 0 else DOWN_COLOR
-    cap_sign = "+" if capital_return >= 0 else ""
     daily_color = UP_COLOR if daily_pnl > 0 else (DOWN_COLOR if daily_pnl < 0 else T["muted"])
     daily_sign = "+" if daily_pnl > 0 else ""
 
@@ -643,8 +660,8 @@ with tab_port:
             <div>일일손익<b style="color:{daily_color}">{daily_sign}{daily_pnl:,.0f}원</b></div>
             <div>보유종목<b>{len(df)}개</b></div>
         </div>
-        <div class="capital-line">최초 자본 10,000,000원 대비&nbsp;
-            <b style="color:{cap_color}">{cap_sign}{capital_return:,.0f}원 ({cap_sign}{capital_return_pct:.2f}%)</b>
+        <div class="capital-line">어제 대비&nbsp;
+            <b style="color:{day_color}">{day_sign}{day_change:,.0f}원</b>
         </div>
         {daily_trade_html}
     </div>
@@ -843,10 +860,16 @@ with tab_port:
     # 비율을 강제로 동일폭으로 만들어버리므로, 이 줄만 st.container(key=...)로 감싸서
     # [class*="st-key-holdings_title_row"] 스코프 CSS로 비율을 다시 덮어씀(new1에서 먼저
     # 발견·수정하고 포팅함, 2026-08-28).
+    _pnl = pd.to_numeric(df["손익"], errors="coerce")
+    _n_win, _n_loss = int((_pnl > 0).sum()), int((_pnl < 0).sum())
     with st.container(key="holdings_title_row"):
         col_title2, col_right = st.columns([5, 4])
         with col_title2:
-            st.markdown("##### Holdings")
+            st.markdown(
+                f"##### Holdings <span style='font-size:12px;font-weight:400'>"
+                f"(<span style='color:{UP_COLOR}'>{_n_win}</span> / "
+                f"<span style='color:{DOWN_COLOR}'>{_n_loss}</span>)</span>",
+                unsafe_allow_html=True)
         with col_right:
             # 등락률순 정렬 토글 점 + 업데이트 날짜를 한 줄로 나란히(app.py CSS로 row-flex).
             # 안 눌림=회색, 누르면 빨강. 아래 정렬 라디오와는 독립된 상태(change_sort_active).

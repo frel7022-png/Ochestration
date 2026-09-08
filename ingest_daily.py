@@ -106,6 +106,11 @@ def main():
             float(pd.to_numeric(_dom["평가금액"], errors="coerce").fillna(0).sum()), on_date=trade_date)
         core.refresh_market_cache(
             holdings2[holdings2["통화"].fillna("원") != "USD"] if "통화" in holdings2 else holdings2)
+        # bigcap_history도 index_history와 lock-step(new1 §6-19) — 하루라도 비면
+        # synthetic_kospi_ex_bigcap이 이틀치 대형주 수익률을 하루치 KOSPI에서 빼 ex 지수가 폭주.
+        bq = core.fetch_bigcap_quotes()
+        if bq and all(bq.get(n) for n in core.BIGCAP_CODES):
+            core.snapshot_bigcap_history({n: bq[n] for n in core.BIGCAP_CODES}, on_date=trade_date)
     except Exception as e:
         print(f"[경고] 지수/국내평가 스냅샷 실패(매매일지 반영은 정상): {e}")
 
