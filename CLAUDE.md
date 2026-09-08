@@ -308,12 +308,14 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   국내 종목 히스토리 종가). 1회성 데이터 정정.
 - **index_history.csv 정정**: 9/4~9/7이 앱 새로고침 stale 값으로 오염(9/7 = 9/4 복제)돼
   new1과 어긋나 있던 것 → `backfill_index_dom_history.py`로 공식 종가 재소급.
-- **§3 VIP vs Orchestration**(new1 §6-21): SamHynix extracted 밑 `st.expander("VIP vs Orchestration")`.
-  표 2×2(VIP / Orchestration × 누적/당일, Orchestration 셀은 VIP 이기면 빨강/지면 파랑) +
-  그래프(VIP 파랑 / Orchestration 빨강), 둘 다 8/14=0. Orchestration = 내 계좌(예수금 포함),
-  첫 스냅샷 대비 리베이스. `fund_nav_history.csv`(new1 17일치 공유), `compute_vip_vs_orchestra(iva)`,
-  `compute_index_vs_account(..., fund_nav_hist=...)` → index에 `펀드` 컬럼. 기준가는 자동 조회 없이
-  세션이 채팅으로 받아 CSV에 직접 append.
+- **§3 VIP vs Orchestra vs Orchestration**(new1 §6-21, 2026-09-08 3-way로 확장): SamHynix extracted 밑
+  `st.expander("VIP vs Orchestra vs Orchestration")`. 표 3행(VIP / Orchestra=new1 계좌 / Orchestration=
+  meritz 계좌) × 누적/당일, **값 검정**, 점 색만 VIP 파랑 / Orchestra 빨강 / Orchestration 녹색.
+  그래프 3선 동색, 범례 없음, 셋 다 8/14=0. `fund_nav_history.csv`(펀드 기준가, new1과 공유) +
+  **`both_accounts.csv`(날짜, orchestra, orchestration)** — new1의 `sync_both_accounts.py`가 두 레포에
+  똑같이 써준다. 어느 앱이든 ingest 후 세션이 `python sync_both_accounts.py`(new1 폴더) → 두 레포
+  각각 `both_accounts.csv` commit. `load_both_accounts()` + `compute_vip_vs_orchestra(iva, both_accounts)`.
+  기준가는 자동 조회 없이 세션이 채팅으로 받아 CSV append.
 - **§4 수수료 모델**(new1 §6-4): `apply_transaction` — 매수 수수료 0, 매도 시 매도금액 × fee_rate 를
   예수금과 그 건 realized 양쪽에서 차감. `account_state.수수료율_원화` 0.000579 → **0.002**
   (수수료율_달러는 휴면). 전체 재생 → 매도 14건 실현손익 재기록.
