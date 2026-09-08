@@ -109,7 +109,7 @@ st.markdown(f"""
     .capital-line b {{ font-size:14px; }}
 
     .daily-trade-box {{ margin-top:10px; padding-top:10px; border-top:1px solid {T['border']}; font-size:12.5px; color:{T['muted']}; }}
-    .daily-trade-count {{ font-size:13px; color:{T['text']}; font-weight:700; }}
+    .daily-trade-count {{ font-size:13px; color:{T['text']}; font-weight:400; }}
     .daily-trade-count span {{ font-weight:400; color:{T['muted']}; margin-left:4px; }}
 
     .legend-wrap {{ display:flex; flex-wrap:wrap; gap:7px 14px; margin-top:10px; margin-bottom:20px; justify-content:center; }}
@@ -611,6 +611,15 @@ with tab_port:
         today_tx.loc[today_tx["구분"] == "매도", "실현손익"], errors="coerce"
     ).sum()
 
+    # 오늘 새로 보유하게 된 종목("어제 종가 기준 순보유수량 0 → 오늘 매수") — 카드 목록 최상단 +
+    # 종목명 녹색 강조. 재진입도 포함. 날짜 비교라 다음날엔 자동 해제 (new1 §4 포팅).
+    _prior_tx = tx[tx["날짜"].astype(str) < today_str].copy()
+    _prior_tx["수량"] = pd.to_numeric(_prior_tx["수량"], errors="coerce").fillna(0)
+    _signed_q = _prior_tx["수량"].where(_prior_tx["구분"] == "매수", -_prior_tx["수량"])
+    _net_y = _signed_q.groupby(_prior_tx["종목명"]).sum()
+    _held_y = set(_net_y[_net_y > 1e-6].index)
+    new_today_names = set(df["종목명"]) - _held_y
+
     # 어제 대비 "국내" 총자산 변화(new1 §4). asset_history.csv 히스토리엔 레드와이어가 섞여
     # 있던 시절 값이라(2026-09-08 RDW 배제) 그걸 그대로 쓰면 오늘 total_assets(국내만)와 빼서
     # RDW 값(약 163만원)만큼 큰 음수가 나온다. → dom_asset_history(국내주식평가, RDW 제외,
@@ -704,6 +713,7 @@ with tab_port:
             <div>보유종목<b>{len(df)}개</b></div>
         </div>
         <div class="capital-line" style="line-height:1.75">
+            <div style="font-size:13px;color:{T['text']};font-weight:600;margin-bottom:2px">Today's Take</div>
             <div>내 주식 어제 대비&nbsp;
                 <b style="color:{day_color}">{day_sign}{day_change:,.0f}원</b>
                 <span style="color:{_stk_c}">&nbsp;{_tt_arrow} {_tt_p(_stk_day)}</span></div>
@@ -982,6 +992,11 @@ with tab_port:
     else:
         df_sorted = df.sort_values("비중", ascending=False)
 
+    # 오늘 신규 진입 종목을 맨 위로
+    if new_today_names:
+        _is_new = df_sorted["종목명"].isin(new_today_names)
+        df_sorted = pd.concat([df_sorted[_is_new], df_sorted[~_is_new]])
+
     rows = df_sorted.to_dict("records")
 
     if not rows:
@@ -1002,6 +1017,7 @@ with tab_port:
 
             code = r["종목코드"]
             is_open = st.session_state.holding_detail_open == code
+            _name_style = f"color:{NEW_COLOR}" if r["종목명"] in new_today_names else ""
 
             # 물타기(현재 사이클 매수 2회+) 했는데 반등해서 현재가 ≥ 최초진입가면 카드 옅은 녹색
             _pts = get_holding_trade_points(tx, r["종목명"])
@@ -1013,7 +1029,7 @@ with tab_port:
                 st.markdown(f"""
                 <div class="{_card_cls}">
                     <div class="stock-top">
-                        <span class="stock-title-group"><span class="stock-name">{r['종목명']}</span></span>
+                        <span class="stock-title-group"><span class="stock-name" style="{_name_style}">{r['종목명']}</span></span>
                         <span class="sector-tag" style="background:{sc}22;color:{sc}">{r['섹터']}</span>
                     </div>
                     <div class="stock-grid">
@@ -1135,27 +1151,26 @@ with tab_tx:
                 return DOWN_COLOR if v is not None and v < 0 else UP_COLOR
 
             _lab = ["FA", "MO", "MA"]
-            _fullname = {"FA": "FA (First in, All out)", "MO": "MO (Multiple Out)",
-                         "MA": "MA (Multiple in, All out)"}
             _td = "white-space:nowrap"
             _trs = "".join(
-                f"<tr><td style='color:{_PA_COLORS[b]};font-weight:700;{_td}'>{_fullname[b]}</td>"
+                f"<tr><td style='color:{_PA_COLORS[b]};font-weight:700'>{b}</td>"
                 f"<td style='text-align:right;{_td}'>{bk[b]['realized']:,.0f}</td>"
-                f"<td style='text-align:right;{_td}'>{bk[b]['pct']:.1f}%</td>"
+                f"<td style='text-align:right'>{bk[b]['pct']:.1f}%</td>"
                 f"<td style='text-align:right;{_td}'>{bk[b]['avg_pct']:+.2f}%</td></tr>"
                 for b in _lab
             )
             st.markdown(
-                "<div style='overflow-x:auto'>"
-                "<table style='width:100%;font-size:11px;border-collapse:collapse;margin:0 0 4px'>"
+                "<table style='width:100%;font-size:11px;border-collapse:collapse;margin:0 0 2px;table-layout:fixed'>"
                 f"<tr style='font-size:10px;color:{T['muted2']}'>"
-                f"<th style='text-align:left'>&nbsp;</th><th style='text-align:right;{_td}'>실현</th>"
-                f"<th style='text-align:right'>비중</th><th style='text-align:right;{_td}'>손익률</th></tr>"
+                "<th style='text-align:left;width:22%'>&nbsp;</th><th style='text-align:right'>실현</th>"
+                "<th style='text-align:right;width:20%'>비중</th><th style='text-align:right'>손익률</th></tr>"
                 + _trs
                 + f"<tr style='border-top:1px solid {T['border']};color:{T['text']};font-weight:700'>"
-                  f"<td style='{_td}'>Total</td><td style='text-align:right;{_td}'>{pa['total']:,.0f}</td>"
+                  f"<td>Total</td><td style='text-align:right;{_td}'>{pa['total']:,.0f}</td>"
                   "<td style='text-align:right'>100%</td><td style='text-align:right'>—</td></tr>"
-                "</table></div>",
+                "</table>"
+                f"<div style='font-size:9.5px;color:{T['muted2']};margin:0 0 4px'>"
+                "FA=First in, All out · MO=Multiple Out · MA=Multiple in, All out</div>",
                 unsafe_allow_html=True,
             )
 
@@ -1537,7 +1552,7 @@ with tab_tx:
   }})();
 </script>
 """,
-            height=590,
+            height=505,
         )
 
     # ---- Account : Index (메인: 코스피/코스닥, 국내주식만) ----
@@ -1642,8 +1657,7 @@ with tab_tx:
             fig_vo.update_layout(
                 height=250, margin=dict(l=44, r=8, t=8, b=26),
                 paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                font=dict(color=T["text"], size=11),
-                legend=dict(orientation="h", yanchor="bottom", y=1.0, x=0, font=dict(size=10)),
+                font=dict(color=T["text"], size=11), showlegend=False,
                 hovermode="x unified",
                 hoverlabel=dict(bgcolor=T["card"], bordercolor=T["border"],
                                 font=dict(size=11, color=T["text"])),
