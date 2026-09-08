@@ -323,3 +323,9 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   글씨 하양) + 상태표(Numbers/Ratio) + Watering 상세(흡수율·시드 배수). USD 없어 new1 그대로 이식.
 - **결과**: meritz Analysis 탭이 new1과 사실상 동일한 포맷. 포트폴리오 탭은 관심종목 스크리너
   4개(Fishing/Volume/Foreigner/포프)만 빠짐 — Supabase 파이프라인에 묶인 거라 이식 안 함(사용자 결정).
+- **Today's Take**(new1 §4, 2026-09-08): Portfolio 요약카드 "어제 대비" 자리 → 3줄.
+  ① 내 주식 어제 대비 ±원 + ▲▼ 내 주식 당일%  ② 혼합지수 당일% · W/O SH(반도체 제외) 당일%
+  ③ DC/UC(오늘 하락일 c=DC / 상승일 c=UC / even·무데이터 —) · W/O SH 동일.
+  Portfolio 탭에서 `compute_index_vs_account` 2번 호출(기본/반도체제외).
+- **DC/UC 색 스왑**(2026-09-08): DC(하락일 방어)=파랑 / UC(상승일 참여)=빨강. 캡처 표·일별 막대·
+  Today's Take 전부. 일일거래 매수/매도 = 한 줄 평문(회색 chip 제거).

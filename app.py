@@ -109,12 +109,8 @@ st.markdown(f"""
     .capital-line b {{ font-size:14px; }}
 
     .daily-trade-box {{ margin-top:10px; padding-top:10px; border-top:1px solid {T['border']}; font-size:12.5px; color:{T['muted']}; }}
-    .daily-trade-count {{ font-size:13px; color:{T['text']}; font-weight:700; margin-bottom:6px; }}
+    .daily-trade-count {{ font-size:13px; color:{T['text']}; font-weight:700; }}
     .daily-trade-count span {{ font-weight:400; color:{T['muted']}; margin-left:4px; }}
-    .daily-trade-row {{ display:flex; flex-wrap:wrap; gap:6px 8px; align-items:baseline; margin-top:4px; }}
-    .daily-trade-row .tag-label {{ font-size:12px; font-weight:700; min-width:30px; }}
-    .trade-chip {{ font-size:12px; background:{T['bg']}; border:1px solid {T['border']}; border-radius:99px; padding:2px 9px; color:{T['text']}; }}
-    .trade-chip b {{ font-weight:600; }}
 
     .legend-wrap {{ display:flex; flex-wrap:wrap; gap:7px 14px; margin-top:10px; margin-bottom:20px; justify-content:center; }}
     .legend-item {{ display:flex; align-items:center; gap:5px; font-size:12px; color:{T['text']}; }}
@@ -633,6 +629,44 @@ with tab_port:
     day_color = UP_COLOR if day_change > 0 else (DOWN_COLOR if day_change < 0 else T["muted"])
     day_sign = "+" if day_change > 0 else ""
 
+    # ---- Today's Take: 오늘 내 주식 성과 vs 시장(혼합지수·DC/UC), 기본 + 반도체 제외(W/O SH) ----
+    _idx_h = load_index_history()
+    _dom_h = load_dom_asset_history()
+    _mc = load_market_cache()
+    _hv = holdings.copy()
+    _hv["_v"] = (pd.to_numeric(_hv["수량"], errors="coerce").fillna(0)
+                 * pd.to_numeric(_hv["현재가"], errors="coerce").fillna(0))
+    _hv["_m"] = _hv["종목명"].map(_mc)
+    _ksv = float(_hv.loc[_hv["_m"] == "KOSPI", "_v"].sum())
+    _kqv = float(_hv.loc[_hv["_m"] == "KOSDAQ", "_v"].sum())
+    _wk = _ksv / (_ksv + _kqv) if (_ksv + _kqv) > 0 else None
+    _frk, _fru = state.get("fee_rate_krw", 0.0), state.get("fee_rate_usd", 0.0)
+    _iva_m = compute_index_vs_account(tx, _dom_h, _idx_h, state["initial"], _frk, _fru, kospi_weight=_wk)
+    _bg_h = load_bigcap_history()
+    _iva_s = (compute_index_vs_account(tx, _dom_h, synthetic_kospi_ex_bigcap(_idx_h, _bg_h),
+                                       state["initial"], _frk, _fru, kospi_weight=_wk)
+              if not _bg_h.empty else None)
+
+    def _tt_dcuc(iva):
+        sm = (iva or {}).get("cap", {}).get("stock", {})
+        b, v = sm.get("today_bucket"), sm.get("today")
+        if b == "하락" and v is not None:
+            return f"DC {v:.2f}", DOWN_COLOR   # 하락일 방어 = 파랑
+        if b == "상승" and v is not None:
+            return f"UC {v:.2f}", UP_COLOR     # 상승일 참여 = 빨강
+        return "—", T["muted"]
+
+    def _tt_p(v):
+        return "—" if v is None else f"{v * 100:+.2f}%"
+
+    _stk_day = (_iva_m.get("latest", {}).get("주식") or (None, None))[1]
+    _bench_m = (_iva_m.get("latest", {}).get("벤치") or (None, None))[1]
+    _bench_s = ((_iva_s.get("latest", {}).get("벤치") if _iva_s else None) or (None, None))[1]
+    _dc_m, _dc_m_c = _tt_dcuc(_iva_m)
+    _dc_s, _dc_s_c = _tt_dcuc(_iva_s)
+    _stk_c = UP_COLOR if (_stk_day or 0) > 0 else (DOWN_COLOR if (_stk_day or 0) < 0 else T["muted"])
+    _tt_arrow = "▲" if day_change > 0 else ("▼" if day_change < 0 else "·")
+
     color = UP_COLOR if stock_profit >= 0 else DOWN_COLOR
     sign = "+" if stock_profit >= 0 else ""
     daily_color = UP_COLOR if daily_pnl > 0 else (DOWN_COLOR if daily_pnl < 0 else T["muted"])
@@ -648,12 +682,11 @@ with tab_port:
     daily_trade_html = f"""
     <div class="daily-trade-box">
         <div class="daily-trade-count">일일거래 총 {total_trade_count}회
-            <span>(매수 {len(buy_tx)}건 · 매도 {len(sell_tx)}건)</span>
-        </div>
-        <div class="daily-trade-row"><span class="tag-label" style="color:{UP_COLOR}">매수</span>
-            <span class="trade-chip"><b>{buy_total_amt:,.0f}원</b></span></div>
-        <div class="daily-trade-row"><span class="tag-label" style="color:{DOWN_COLOR}">매도</span>
-            <span class="trade-chip"><b>{sell_total_amt:,.0f}원</b></span></div>
+            <span>(매수 {len(buy_tx)}건 · 매도 {len(sell_tx)}건)</span></div>
+        <div style="font-size:12px;color:{T['muted']};margin-top:2px">
+            <span style="color:{UP_COLOR}">매수</span> <b>{buy_total_amt:,.0f}원</b>
+            &nbsp;&nbsp;·&nbsp;&nbsp;
+            <span style="color:{DOWN_COLOR}">매도</span> <b>{sell_total_amt:,.0f}원</b></div>
     </div>
     """
 
@@ -670,8 +703,14 @@ with tab_port:
             <div>일일손익<b style="color:{daily_color}">{daily_sign}{daily_pnl:,.0f}원</b></div>
             <div>보유종목<b>{len(df)}개</b></div>
         </div>
-        <div class="capital-line">어제 대비&nbsp;
-            <b style="color:{day_color}">{day_sign}{day_change:,.0f}원</b>
+        <div class="capital-line" style="line-height:1.75">
+            <div>내 주식 어제 대비&nbsp;
+                <b style="color:{day_color}">{day_sign}{day_change:,.0f}원</b>
+                <span style="color:{_stk_c}">&nbsp;{_tt_arrow} {_tt_p(_stk_day)}</span></div>
+            <div style="color:{T['muted']}">혼합지수&nbsp;<b style="color:{T['text']}">{_tt_p(_bench_m)}</b>
+                &nbsp;·&nbsp;W/O SH&nbsp;<b style="color:{T['text']}">{_tt_p(_bench_s)}</b></div>
+            <div style="color:{T['muted']}"><b style="color:{_dc_m_c}">{_dc_m}</b>
+                &nbsp;·&nbsp;W/O SH&nbsp;<b style="color:{_dc_s_c}">{_dc_s}</b></div>
         </div>
         {daily_trade_html}
     </div>
@@ -1325,8 +1364,8 @@ with tab_tx:
             )
 
         caps_html = (
-            _cap_tbl("DC ERA", UP_COLOR, "하락", "dc", "era", False)
-            + _cap_tbl("UC ERA", DOWN_COLOR, "상승", "uc", "pct", False)
+            _cap_tbl("DC ERA", DOWN_COLOR, "하락", "dc", "era", False)
+            + _cap_tbl("UC ERA", UP_COLOR, "상승", "uc", "pct", False)
             + _cap_tbl("even 평균 · 승률 (±0.1%)", T["muted2"], "even", "even", "evr", True)
             + f"<div style='font-size:10px;color:{T['muted2']};margin:3px 0 4px'>"
               f"하락 {nn['down']} · 상승 {nn['up']} · even {nn['even']}</div>"
@@ -1416,7 +1455,7 @@ with tab_tx:
                 continue
             _xs.append(dt)
             _ys.append(float(c))
-            _cols.append(UP_COLOR if bk == "하락" else DOWN_COLOR)
+            _cols.append(DOWN_COLOR if bk == "하락" else UP_COLOR)
             _cd.append((bk, f"{bd * 100:+.2f}%" if pd.notna(bd) else "—",
                         f"{ad * 100:+.2f}%" if pd.notna(ad) else "—"))
         fig_s = go.Figure()
