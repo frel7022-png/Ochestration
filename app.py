@@ -1771,12 +1771,27 @@ with tab_tx:
         for _, r in day_tx.iterrows():
             realized = r["실현손익"]
             right_html = ""
+            memo_txt = str(r["메모"]) if str(r["메모"]) not in ("", "nan") else ""
+            if r["구분"] in ("입금", "출금"):
+                amt = float(r["수량"]) * float(r["단가"])
+                sign = "+" if r["구분"] == "입금" else "-"
+                rc = UP_COLOR if r["구분"] == "입금" else DOWN_COLOR
+                st.markdown(f"""
+            <div class="tx-card">
+                <div class="tx-left">
+                    <span class="name">{memo_txt or r['구분']}</span>
+                    <span class="meta">{r['구분']}</span>
+                </div>
+                <div class="tx-right"><span style="color:{rc}">{sign}{amt:,.0f}원</span></div>
+            </div>
+            """, unsafe_allow_html=True)
+                continue
             if r["구분"] == "매도" and str(realized) not in ("", "nan"):
                 rv = float(realized)
                 rc = UP_COLOR if rv >= 0 else DOWN_COLOR
                 rs = "+" if rv >= 0 else ""
                 right_html = f'<span style="color:{rc}">{rs}{rv:,.0f}원</span>'
-            memo_html = f' · {r["메모"]}' if str(r["메모"]) not in ("", "nan") else ""
+            memo_html = f' · {memo_txt}' if memo_txt else ""
             st.markdown(f"""
             <div class="tx-card">
                 <div class="tx-left">
