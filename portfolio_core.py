@@ -1354,13 +1354,17 @@ def compute_index_vs_account(tx: pd.DataFrame, dom_asset_hist: pd.DataFrame, ind
             "sensitivity_basis": "혼합" if wk is not None else "코스피"}
 
 
-def compute_vip_vs_orchestra(iva: dict, both_accounts: pd.DataFrame | None = None) -> dict:
+def compute_vip_vs_orchestra(iva: dict, both_accounts: pd.DataFrame | None = None,
+                             self_key: str = "orchestra") -> dict:
     """new1 §6-21 'VIP vs Orchestra vs Orchestration' 패널 데이터. iva = compute_index_vs_account
     결과(fund_nav_hist 넘겨 index에 '펀드' 컬럼 있어야 함 — 없으면 {}).
     세 선 모두 anchor일(8/14) = 0 리베이스:
-      - VIP           = idx_cum['펀드']
-      - Orchestra     = new1 계좌. both_accounts['orchestra'] 우선, 없으면 이 앱 me['계좌수익'] 재기준화
-      - Orchestration = meritz 계좌. both_accounts['orchestration']. 없으면 orchn_line=None
+      - VIP = idx_cum['펀드']
+      - 이 앱 '자신의' 계좌(self_key: new1→'orchestra', meritz→'orchestration')
+        = 이 앱이 이미 라이브로 계산한 me['계좌수익']을 첫값 대비 재기준화 — Account:Index 패널의
+          '내 계좌'와 같은 데이터. both_accounts.csv 동기화 지연에 영향 안 받음("앱에 이미 있는 값").
+      - '다른' 계좌 = both_accounts.csv(sync_both_accounts.py 크로스-레포 파일)의 해당 컬럼.
+        파일/컬럼 없으면 그 선은 생략(None).
     반환: {vip_line/orch_line/orchn_line: [(날짜,누적)], vip/orch/orchn: (누적, 당일)}. 펀드 없으면 {}."""
     idx_cum, me, latest = iva.get("index"), iva.get("me"), iva.get("latest", {})
     if idx_cum is None or me is None or "펀드" not in getattr(idx_cum, "columns", []):
@@ -1373,30 +1377,34 @@ def compute_vip_vs_orchestra(iva: dict, both_accounts: pd.DataFrame | None = Non
         return [(str(d), float(v)) for d, v in zip(dates, vals) if pd.notna(v)]
 
     def _last_day(line):
-        return (line[-1][1] - line[-2][1]) if len(line) >= 2 else None
+        return (line[-1][1] - line[-2][1]) if line and len(line) >= 2 else None
 
     vip_line = _ser_to_line(idx_cum["날짜"], fser)
     vip_cum = vip_line[-1][1] if vip_line else None
 
-    ba = both_accounts if (both_accounts is not None and not both_accounts.empty) else None
-    if ba is not None and "orchestra" in ba.columns:
-        orch_line = _ser_to_line(ba["날짜"].astype(str), pd.to_numeric(ba["orchestra"], errors="coerce"))
-    else:
-        acct = pd.to_numeric(me["계좌수익"], errors="coerce")
-        r0 = float(acct.iloc[0]) if pd.notna(acct.iloc[0]) else 0.0
-        orch_line = _ser_to_line(me["날짜"], (1.0 + acct) / (1.0 + r0) - 1.0)
-    orch_cum = orch_line[-1][1] if orch_line else None
+    # 이 앱 자신의 계좌 = 라이브 me['계좌수익'] 재기준화 (sync_both_accounts.py가 쓰는 공식과 동일)
+    acct = pd.to_numeric(me["계좌수익"], errors="coerce")
+    r0 = float(acct.iloc[0]) if len(acct) and pd.notna(acct.iloc[0]) else 0.0
+    self_line = _ser_to_line(me["날짜"], (1.0 + acct) / (1.0 + r0) - 1.0)
 
-    orchn_line = orchn_cum = orchn_day = None
-    if ba is not None and "orchestration" in ba.columns:
-        orchn_line = _ser_to_line(ba["날짜"].astype(str), pd.to_numeric(ba["orchestration"], errors="coerce"))
-        orchn_cum = orchn_line[-1][1] if orchn_line else None
-        orchn_day = _last_day(orchn_line)
+    ba = both_accounts if (both_accounts is not None and not both_accounts.empty) else None
+
+    def _other_line(col):
+        if ba is not None and col in ba.columns:
+            return _ser_to_line(ba["날짜"].astype(str), pd.to_numeric(ba[col], errors="coerce"))
+        return None
+
+    if self_key == "orchestration":
+        orch_line, orchn_line = _other_line("orchestra"), self_line
+    else:
+        orch_line, orchn_line = self_line, _other_line("orchestration")
+    orch_cum = orch_line[-1][1] if orch_line else None
+    orchn_cum = orchn_line[-1][1] if orchn_line else None
 
     return {"vip_line": vip_line, "orch_line": orch_line, "orchn_line": orchn_line,
             "vip": (vip_cum, latest.get("펀드", (None, None))[1]),
-            "orch": (orch_cum, _last_day(orch_line) if ba is not None else latest.get("계좌", (None, None))[1]),
-            "orchn": (orchn_cum, orchn_day)}
+            "orch": (orch_cum, _last_day(orch_line)),
+            "orchn": (orchn_cum, _last_day(orchn_line))}
 
 
 # ------------------------------------------------------------------ #

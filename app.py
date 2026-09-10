@@ -1624,7 +1624,7 @@ with tab_tx:
 
     # ---- VIP vs Orchestra vs Orchestration (new1 §6-21): VIP 펀드 / new1 계좌 / meritz 계좌, 셋 다 8/14=0 ----
     with st.expander("VIP vs Orchestra vs Orchestration", expanded=False):
-        vo = compute_vip_vs_orchestra(iva, load_both_accounts())
+        vo = compute_vip_vs_orchestra(iva, load_both_accounts(), self_key="orchestration")
         if not vo:
             st.caption("fund_nav_history.csv 비어있음 — 세션에 펀드 기준가를 알려주세요.")
         else:

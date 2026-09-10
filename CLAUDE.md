@@ -323,8 +323,12 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   그래프 3선 동색, 범례 없음, 셋 다 8/14=0. `fund_nav_history.csv`(펀드 기준가, new1과 공유) +
   **`both_accounts.csv`(날짜, orchestra, orchestration)** — new1의 `sync_both_accounts.py`가 두 레포에
   똑같이 써준다. 어느 앱이든 ingest 후 세션이 `python sync_both_accounts.py`(new1 폴더) → 두 레포
-  각각 `both_accounts.csv` commit. `load_both_accounts()` + `compute_vip_vs_orchestra(iva, both_accounts)`.
-  기준가는 자동 조회 없이 세션이 채팅으로 받아 CSV append.
+  각각 `both_accounts.csv` commit. `load_both_accounts()` + `compute_vip_vs_orchestra(iva,
+  both_accounts, self_key="orchestration")`. 기준가는 자동 조회 없이 세션이 채팅으로 받아 CSV append.
+  - **(2026-09-10 개정)** `self_key="orchestration"` → **Orchestration(meritz 자기 계좌)은 라이브
+    `me["계좌수익"]` 재기준화값을 씀** (Account:Index '내 계좌'와 같은 데이터). Orchestra(new1)만
+    `both_accounts.csv`에서. 계기: 배포본 `both_accounts.csv`가 밀려 Orchestration이 틀리게
+    나왔는데 그 값은 이미 앱에 라이브로 있었음(사용자 지적 "그냥 가져오면 되는데"). new1 §6-21 참고.
 - **§4 수수료 모델**(new1 §6-4): `apply_transaction` — 매수 수수료 0, 매도 시 매도금액 × fee_rate 를
   예수금과 그 건 realized 양쪽에서 차감. `account_state.수수료율_원화` 0.000579 → **0.002**
   (수수료율_달러는 휴면). 전체 재생 → 매도 14건 실현손익 재기록.
