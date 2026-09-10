@@ -772,8 +772,8 @@ with tab_port:
             <div style="color:{T['muted']}"><b style="color:{_dc_m_c}">{_dc_m}</b>
                 &nbsp;·&nbsp;W/O SH&nbsp;<b style="color:{_dc_s_c}">{_dc_s}</b></div>
         </div>
-        {daily_trade_html}
         {_claude_read_html(T)}
+        {daily_trade_html}
     </div>
     """, unsafe_allow_html=True)
 
