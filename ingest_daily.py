@@ -97,10 +97,27 @@ def main():
     # "지수 대비 계좌"(§6-4) 스냅샷 3종 — app.py 새로고침 핸들러와 같은 것. 실패해도(네트워크)
     # 매매일지 반영은 성공 처리하고 경고만. 시세는 carried price라 세션의 refresh_all_prices
     # 뒤에 한 번 더 스냅샷하면 그날치가 최신값으로 덮어써짐.
+    # **확정 종가 우선(2026-09-10, new1 §6-2/§6-17/§6-19와 동일)**: 과거 날짜의 매매일지를
+    # 오늘(장중)에 반영하면 fetch_index_quotes()/fetch_bigcap_quotes()는 '오늘 장중값'을
+    # 준다 — 그걸 그 과거 날짜 행에 찍으면 히스토리가 오염된다(실제로 겪음: meritz 9/9 행이
+    # 9/10 장중값으로 덮여 new1과 어긋나고 혼합지수·VIP vs Orchestra/Orchestration 패널이
+    # 통째로 오염됨). 네이버 일별시세로 trade_date '그 날짜의 종가'를 먼저 조회하고, 없을
+    # 때만 실시간으로 폴백 → new1/meritz가 언제 반영하든 같은 값으로 수렴한다.
+    def _close_on(code, fallback):
+        try:
+            for row in core.fetch_daily_price_history(code, trade_date, trade_date) or []:
+                if row.get("날짜") == trade_date and row.get("종가"):
+                    return float(row["종가"])
+        except Exception:
+            pass
+        return fallback
+
     try:
         q = core.fetch_index_quotes() or {}
-        if q.get("KOSPI") and q.get("KOSDAQ"):
-            core.snapshot_index_history(q["KOSPI"].get("price"), q["KOSDAQ"].get("price"), on_date=trade_date)
+        kospi = _close_on("KOSPI", (q.get("KOSPI") or {}).get("price"))
+        kosdaq = _close_on("KOSDAQ", (q.get("KOSDAQ") or {}).get("price"))
+        if kospi and kosdaq:
+            core.snapshot_index_history(kospi, kosdaq, on_date=trade_date)
         _dom = df[df["통화"].fillna("원") != "USD"] if "통화" in df else df
         core.snapshot_dom_asset_history(
             float(pd.to_numeric(_dom["평가금액"], errors="coerce").fillna(0).sum()), on_date=trade_date)
@@ -108,9 +125,10 @@ def main():
             holdings2[holdings2["통화"].fillna("원") != "USD"] if "통화" in holdings2 else holdings2)
         # bigcap_history도 index_history와 lock-step(new1 §6-19) — 하루라도 비면
         # synthetic_kospi_ex_bigcap이 이틀치 대형주 수익률을 하루치 KOSPI에서 빼 ex 지수가 폭주.
-        bq = core.fetch_bigcap_quotes()
-        if bq and all(bq.get(n) for n in core.BIGCAP_CODES):
-            core.snapshot_bigcap_history({n: bq[n] for n in core.BIGCAP_CODES}, on_date=trade_date)
+        bq = core.fetch_bigcap_quotes() or {}
+        closes = {n: _close_on(core.BIGCAP_CODES[n], bq.get(n)) for n in core.BIGCAP_CODES}
+        if all(closes.get(n) for n in core.BIGCAP_CODES):
+            core.snapshot_bigcap_history(closes, on_date=trade_date)
     except Exception as e:
         print(f"[경고] 지수/국내평가 스냅샷 실패(매매일지 반영은 정상): {e}")
 

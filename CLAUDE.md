@@ -308,6 +308,15 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   국내 종목 히스토리 종가). 1회성 데이터 정정.
 - **index_history.csv 정정**: 9/4~9/7이 앱 새로고침 stale 값으로 오염(9/7 = 9/4 복제)돼
   new1과 어긋나 있던 것 → `backfill_index_dom_history.py`로 공식 종가 재소급.
+- **index/bigcap_history 재오염 + 근본 원인 수정 (2026-09-10, new1 CLAUDE.md §6-2 참고)**:
+  `ingest_daily.py`가 `index_history`/`bigcap_history`를 **실시간 시세**로 `on_date=trade_date`에
+  찍고 있어서, **과거 날짜 매매일지를 장중에 반영하면 그 과거 날짜 행이 '오늘 장중값'으로 덮였다**
+  — 909.csv(9/9)를 9/10 장중에 반영하다 `index_history[9/9]`가 9/10 장중 KOSPI(7002)로 덮여
+  new1(7051.64)과 어긋났고 → 혼합지수·`SamHynix extracted`·`VIP vs Orchestra/Orchestration`
+  패널이 통째로 오염. bigcap도 9/4·9/9·9/10이 갈림. **수정**: `ingest_daily.py`에 `_close_on()`
+  헬퍼 — `fetch_daily_price_history`로 trade_date **확정 종가 먼저** 조회, 없을 때만 실시간
+  폴백. `index_history.csv`/`bigcap_history.csv`/`fund_nav_history.csv`(9/10 행 누락분)를
+  new1과 **동일 파일**로 맞춤. 당일 값은 장중이라 잠정 — 다음날 ingest가 확정 종가로 자동 정정.
 - **§3 VIP vs Orchestra vs Orchestration**(new1 §6-21, 2026-09-08 3-way로 확장): SamHynix extracted 밑
   `st.expander("VIP vs Orchestra vs Orchestration")`. 표 3행(VIP / Orchestra=new1 계좌 / Orchestration=
   meritz 계좌) × 누적/당일, **값 검정**, 점 색만 VIP 파랑 / Orchestra 빨강 / Orchestration 녹색.
