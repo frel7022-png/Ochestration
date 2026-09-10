@@ -34,6 +34,7 @@ from portfolio_core import (
     snapshot_bigcap_history, fetch_bigcap_quotes,
     compute_index_vs_account, _index_day_moves,
     load_fund_nav_history, compute_vip_vs_orchestra, compute_pnl_actions, load_both_accounts,
+    write_account_snapshot, fetch_peer_account_snapshot, resolve_trading_date,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
@@ -582,6 +583,20 @@ if refresh_clicked_top or auto_refresh_triggered:
                                               state["initial"], state.get("fee_rate_krw", 0.0),
                                               state.get("fee_rate_usd", 0.0))
             append_capture_anomalies(_iva_a.get("even_anomalies", []))
+            # 런타임 채널(new1 §6-21): 이 앱(orchestration)의 라이브 계좌 상태를 Supabase에 upsert →
+            # new1이 3-way 패널을 켤 때(또는 디버깅 시) meritz 최신값을 커밋 지연 없이 읽는다.
+            _me_a = _iva_a.get("me")
+            if _me_a is not None and not _me_a.empty:
+                _acc = pd.to_numeric(_me_a["계좌수익"], errors="coerce")
+                _r0 = float(_acc.iloc[0]) if pd.notna(_acc.iloc[0]) else 0.0
+                _cum = (1.0 + float(_acc.iloc[-1])) / (1.0 + _r0) - 1.0
+                _day = float(_me_a["계좌당일"].iloc[-1]) if "계좌당일" in _me_a else None
+                _sb = st.secrets.get("supabase", {})
+                write_account_snapshot("orchestration", _cum, _day, total_assets_top,
+                                       resolve_trading_date(), _sb.get("url", ""), _sb.get("anon_key", ""))
+                # 상대 앱(Orchestra=new1) 최신 스냅샷도 이때 받아 캐싱 → VIP 패널이 이걸 씀
+                st.session_state["peer_orchestra"] = fetch_peer_account_snapshot(
+                    "orchestra", _sb.get("url", ""), _sb.get("anon_key", ""))
         except Exception:
             pass
     if refresh_report["updated"]:
@@ -1624,7 +1639,13 @@ with tab_tx:
 
     # ---- VIP vs Orchestra vs Orchestration (new1 §6-21): VIP 펀드 / new1 계좌 / meritz 계좌, 셋 다 8/14=0 ----
     with st.expander("VIP vs Orchestra vs Orchestration", expanded=False):
-        vo = compute_vip_vs_orchestra(iva, load_both_accounts(), self_key="orchestration")
+        # Orchestra(new1) 최신값: 새로고침 때 캐싱해둔 것, 없으면 여기서 1회 조회(런타임 채널 §6-21).
+        if "peer_orchestra" not in st.session_state:
+            _sbp = st.secrets.get("supabase", {})
+            st.session_state["peer_orchestra"] = fetch_peer_account_snapshot(
+                "orchestra", _sbp.get("url", ""), _sbp.get("anon_key", ""))
+        vo = compute_vip_vs_orchestra(iva, load_both_accounts(), self_key="orchestration",
+                                       peer_latest=st.session_state.get("peer_orchestra"))
         if not vo:
             st.caption("fund_nav_history.csv 비어있음 — 세션에 펀드 기준가를 알려주세요.")
         else:

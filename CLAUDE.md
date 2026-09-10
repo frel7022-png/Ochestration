@@ -326,9 +326,20 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   각각 `both_accounts.csv` commit. `load_both_accounts()` + `compute_vip_vs_orchestra(iva,
   both_accounts, self_key="orchestration")`. 기준가는 자동 조회 없이 세션이 채팅으로 받아 CSV append.
   - **(2026-09-10 개정)** `self_key="orchestration"` → **Orchestration(meritz 자기 계좌)은 라이브
-    `me["계좌수익"]` 재기준화값을 씀** (Account:Index '내 계좌'와 같은 데이터). Orchestra(new1)만
-    `both_accounts.csv`에서. 계기: 배포본 `both_accounts.csv`가 밀려 Orchestration이 틀리게
-    나왔는데 그 값은 이미 앱에 라이브로 있었음(사용자 지적 "그냥 가져오면 되는데"). new1 §6-21 참고.
+    `me["계좌수익"]` 재기준화값을 씀** (Account:Index '내 계좌'와 같은 데이터). Orchestra(new1)는
+    선그래프 히스토리는 `both_accounts.csv`, **표 누적/당일 + 선 마지막 점은 `peer_latest`**.
+  - **Supabase 런타임 채널 `account_snapshot` (2026-09-10 신설, new1 §6-21 참고)**: `both_accounts.csv`가
+    세션 sync 시점에 얼어서(장중 sync면 그 시각값 고정) 상대 앱 라이브값을 못 따라가는 문제 해결.
+    양쪽 앱이 **시세 새로고침마다** 자기 계좌 라이브 상태를 `account_snapshot`에 upsert
+    (`write_account_snapshot("orchestration", ...)`), meritz VIP 패널은 새로고침 때 Orchestra(new1)
+    최신값을 `fetch_peer_account_snapshot("orchestra", ...)`로 읽어 `st.session_state["peer_orchestra"]`에
+    캐싱 → `compute_vip_vs_orchestra(..., peer_latest=...)`. **graceful degradation**: 시크릿 없음/
+    네트워크/테이블 없음 → 조용히 `both_accounts.csv` 폴백, 앱 불변.
+    - 스키마: `account_snapshot(id, app, trade_date, cum, day, total_asset, updated_at)`,
+      `unique(app, trade_date)`.
+    - **셋업(사용자)**: ① Supabase에 `account_snapshot` 테이블 생성(new1 CLAUDE.md §6-21에 SQL).
+      ② **meritz Streamlit Cloud secrets + 로컬 `.streamlit/secrets.toml`에 `[supabase]`**
+      (new1과 같은 URL/anon_key). 없어도 앱은 폴백으로 정상.
 - **§4 수수료 모델**(new1 §6-4): `apply_transaction` — 매수 수수료 0, 매도 시 매도금액 × fee_rate 를
   예수금과 그 건 realized 양쪽에서 차감. `account_state.수수료율_원화` 0.000579 → **0.002**
   (수수료율_달러는 휴면). 전체 재생 → 매도 14건 실현손익 재기록.
