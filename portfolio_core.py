@@ -808,6 +808,18 @@ def load_both_accounts() -> pd.DataFrame:
     return pd.DataFrame(columns=["날짜", "orchestra", "orchestration"])
 
 
+CLAUDE_NOTES_FILE = HERE / "claude_daily_notes.csv"  # 날짜, 별점, 코멘트 — "Claude's Read"(new1 §6-22)
+
+
+def load_claude_notes() -> pd.DataFrame:
+    """세션이 매일 장 마감 후 써넣는 일일 평가(Claude's Read, new1 §6-22). 날짜 오름차순.
+    별점 0~5 정수(보수적, 중간=2). meritz read는 Orchestration(meritz) 계좌만 다룬다."""
+    if CLAUDE_NOTES_FILE.exists():
+        df = pd.read_csv(CLAUDE_NOTES_FILE, dtype={"날짜": str})
+        return df.sort_values("날짜").reset_index(drop=True)
+    return pd.DataFrame(columns=["날짜", "별점", "코멘트"])
+
+
 def write_account_snapshot(app: str, cum: float, day, total_asset: float,
                            trade_date: str, sb_url: str, sb_key: str) -> bool:
     """이 앱의 '지금 라이브' 계좌 상태를 Supabase account_snapshot에 upsert(new1 §6-21 런타임 채널).

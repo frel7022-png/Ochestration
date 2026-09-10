@@ -35,6 +35,7 @@ from portfolio_core import (
     compute_index_vs_account, _index_day_moves,
     load_fund_nav_history, compute_vip_vs_orchestra, compute_pnl_actions, load_both_accounts,
     write_account_snapshot, fetch_peer_account_snapshot, resolve_trading_date,
+    load_claude_notes,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
@@ -44,6 +45,40 @@ _PA_COLORS = {"FA": UP_COLOR, "MO": "#22c55e", "MA": DOWN_COLOR}  # P&L Actions:
 KOSPI_COLOR = "#f59e0b"   # 지수 대비 계좌 그래프: 코스피 참조선(앰버)
 KOSDAQ_COLOR = "#14b8a6"  # 코스닥 참조선(틸)
 CASH_LABEL = "현금(예수금)"
+
+# ---- Claude's Read (new1 §6-22, 2026-09-10 meritz 이식) : 요약카드 Today's Take 밑, 세션의
+#      일일 평가(서술 + 별점). meritz read는 Orchestration 계좌만 다룬다. ----
+_CLAUDE_ORANGE = "#D97757"
+_CLAUDE_MARK = ("<svg width='13' height='13' viewBox='0 0 24 24' style='vertical-align:-2px'>"
+                "<g fill='#D97757'>"
+                "<path d='M12 2l1.6 6.1L19 5.6l-3.1 4.9L22 12l-6.1 1.6L18.4 19l-4.9-3.1L12 22l-1.6-6.1L5 18.4l3.1-4.9L2 12l6.1-1.6L5.6 5z'/>"
+                "</g></svg>")
+
+
+def _claude_read_html(T: dict) -> str:
+    """요약카드 Today's Take 밑 'Claude's Read' 블록. 네이티브 <details>라 클릭해도 rerun 없음.
+    **오늘(마지막) 코멘트만** 보여준다. claude_daily_notes.csv 비어있으면 빈 문자열."""
+    notes = load_claude_notes()
+    if notes.empty:
+        return ""
+
+    def _stars(n):
+        n = max(0, min(5, int(n)))
+        return (f"<span style='color:{_CLAUDE_ORANGE}'>{'★' * n}</span>"
+                f"<span style='color:{T['muted2']}'>{'☆' * (5 - n)}</span>")
+
+    cur = notes.iloc[-1]
+    _sum = (f"list-style:none;cursor:pointer;font-size:13px;color:{_CLAUDE_ORANGE};"
+            f"font-weight:600;display:flex;align-items:center;gap:6px")
+    return (
+        f"<details style='border-top:1px solid {T['border']};margin-top:10px;padding-top:9px'>"
+        f"<summary style=\"{_sum}\">{_CLAUDE_MARK}<span>Claude's Read</span>"
+        f"<span style='font-size:12px;letter-spacing:1px'>{_stars(cur['별점'])}</span>"
+        f"<span style='font-size:11px;color:{T['muted']};font-weight:400;margin-left:auto'>"
+        f"{str(cur['날짜'])[5:]}</span></summary>"
+        f"<div style='font-size:12px;color:{T['text']};line-height:1.65;margin:8px 2px 4px'>"
+        f"{str(cur['코멘트']).replace(chr(10), '<br>')}</div></details>"
+    )
 
 SECTOR_PALETTE = [
     "#2DD4BF", "#F5A623", "#A78BFA", "#34D399", "#F472B6",
@@ -738,6 +773,7 @@ with tab_port:
                 &nbsp;·&nbsp;W/O SH&nbsp;<b style="color:{_dc_s_c}">{_dc_s}</b></div>
         </div>
         {daily_trade_html}
+        {_claude_read_html(T)}
     </div>
     """, unsafe_allow_html=True)
 
