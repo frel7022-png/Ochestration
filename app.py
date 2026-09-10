@@ -792,7 +792,7 @@ with tab_port:
         sector_val = df_grp.groupby("섹터그룹")["평가금액"].sum().to_dict()
         if include_cash and state["cash"] > 0:
             sector_val[CASH_LABEL] = state["cash"]
-        sector_items = sorted(sector_val.items(), key=lambda x: x[1], reverse=True)
+        sector_items = sorted(sector_val.items(), key=lambda x: (x[0] == "기타2", -x[1]))  # 기타2는 맨 밑
         denom = sum(v for _, v in sector_items)
 
         if denom > 0 and sector_items:
@@ -821,6 +821,7 @@ with tab_port:
 
         # ---- 섹터별 현재 비중 막대 (주식 총자산 대비, 예수금 제외) + 목표 비중 ----
         if stock_weight_rank:
+            sec_stocks = df_grp.groupby("섹터그룹")["종목명"].apply(lambda s: ", ".join(s)).to_dict()
             sec_hist = load_sector_history()
             prev_weights = {}
             if not sec_hist.empty:
@@ -874,31 +875,35 @@ with tab_port:
                     )
 
                 if is_open:
+                    st.markdown(
+                        f'<div class="sector-stock-names">{sec_stocks.get(name, "")}</div>',
+                        unsafe_allow_html=True,
+                    )
                     if not sec_hist.empty and name in sec_hist["섹터그룹"].unique():
                         series = sec_hist[sec_hist["섹터그룹"] == name].sort_values("날짜")
                         dates = series["날짜"].tolist()
                         vals = series["비중"].tolist()
 
-                        fig2, ax2 = plt.subplots(figsize=(4.6, 2.2))
-                        fig2.patch.set_alpha(0)
-                        ax2.set_facecolor("none")
-                        x2 = list(range(len(dates)))
-                        ax2.plot(x2, vals, color=color, linewidth=2.0, marker="o", markersize=3)
-                        ax2.plot([x2[-1]], [vals[-1]], marker="o", markersize=7, color=color)
-                        for xi, yi in zip(x2, vals):
-                            ax2.annotate(f"{yi:.1f}%", (xi, yi), textcoords="offset points", xytext=(0, 7),
-                                         ha="center", fontsize=8, color=T["text"])
+                        svg_w, svg_h = 600, 150
+                        pad_l, pad_r, pad_t, pad_b = 12, 12, 22, 22
+                        plot_w = svg_w - pad_l - pad_r
+                        plot_h = svg_h - pad_t - pad_b
+                        n = len(vals)
+                        xs = [pad_l if n <= 1 else pad_l + plot_w * i / (n - 1) for i in range(n)]
+                        ys = [pad_t + plot_h * (1 - min(v, 40) / 40) for v in vals]
+
+                        poly = " ".join(f"{x:.1f},{y:.1f}" for x, y in zip(xs, ys))
+                        parts = [f'<svg viewBox="0 0 {svg_w} {svg_h}" style="width:100%;height:auto;display:block;">']
                         if target is not None:
-                            ax2.axhline(target, color=T["muted2"], linewidth=1, linestyle="--")
-                        ax2.set_ylim(0, 40)
-                        ax2.set_xticks(x2)
-                        ax2.set_xticklabels([d[5:] for d in dates], fontsize=8, color=T["muted"])
-                        ax2.tick_params(axis="y", labelsize=8, colors=T["muted"])
-                        for spine in ax2.spines.values():
-                            spine.set_visible(False)
-                        ax2.grid(axis="y", color=T["border"], linewidth=0.6)
-                        st.pyplot(fig2, use_container_width=True)
-                        plt.close(fig2)
+                            ty = pad_t + plot_h * (1 - min(target, 40) / 40)
+                            parts.append(f'<line x1="{pad_l}" y1="{ty:.1f}" x2="{svg_w - pad_r}" y2="{ty:.1f}" stroke="{T["muted2"]}" stroke-width="1" stroke-dasharray="4,3" />')
+                        parts.append(f'<polyline points="{poly}" fill="none" stroke="{color}" stroke-width="2.5" />')
+                        for x, y, v, d in zip(xs, ys, vals, dates):
+                            parts.append(f'<circle cx="{x:.1f}" cy="{y:.1f}" r="4" fill="{color}" />')
+                            parts.append(f'<text x="{x:.1f}" y="{y - 9:.1f}" font-size="10" fill="{T["text"]}" text-anchor="middle">{v:.1f}%</text>')
+                            parts.append(f'<text x="{x:.1f}" y="{svg_h - 6}" font-size="9" fill="{T["muted"]}" text-anchor="middle">{d[5:]}</text>')
+                        parts.append('</svg>')
+                        st.markdown("".join(parts), unsafe_allow_html=True)
                     else:
                         st.info("시세 새로고침 또는 거래 기록을 하면 그날의 섹터 비중이 저장되어 추이가 쌓입니다.")
 
