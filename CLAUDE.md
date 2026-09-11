@@ -355,3 +355,9 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   Portfolio 탭에서 `compute_index_vs_account` 2번 호출(기본/반도체제외).
 - **DC/UC 색 스왑**(2026-09-08): DC(하락일 방어)=파랑 / UC(상승일 참여)=빨강. 캡처 표·일별 막대·
   Today's Take 전부. 일일거래 매수/매도 = 한 줄 평문(회색 chip 제거).
+- **WATERING 상세 "현재가" 선 실데이터화**(2026-09-11, new1 §6-10 갱신 포팅): 예전엔 최초매입일
+  →오늘 두 점 직선이라 "그 사이 등락 없이 꾸준히 내려온 것처럼" 보이는 문제. meritz엔 new1의
+  Supabase price_history가 없어서, **KRW 종목은 `fetch_daily_price_history`(네이버 일별시세,
+  종목당 API 호출 1번으로 구간 전체)**로 실제 일별 종가를 그리고, **USD(나스닥) 종목은 이 API가
+  국내 전용이라 지원 밖 — 두 점 직선 폴백** 그대로. 첫/끝 점은 실제 체결가·실시간가로 고정.
+  세션당 종목코드 1회만 조회(`st.session_state["holding_price_hist_cache"]`).
