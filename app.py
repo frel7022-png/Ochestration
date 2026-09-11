@@ -35,7 +35,7 @@ from portfolio_core import (
     compute_index_vs_account, _index_day_moves,
     load_fund_nav_history, compute_vip_vs_orchestra, compute_pnl_actions, load_both_accounts,
     write_account_snapshot, fetch_peer_account_snapshot, resolve_trading_date,
-    load_claude_notes,
+    load_claude_notes, fetch_daily_price_history,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
@@ -435,7 +435,12 @@ def _render_holding_detail(r: dict, tx: pd.DataFrame, T: dict):
     """보유종목 카드를 눌렀을 때 펼쳐지는 상세 — 매수/매도 요약 + "물타기 적정성" 그래프.
     new1의 동일 함수를 포팅함(2026-08-28) — meritz는 종목마다 통화(원/USD)가 달라서, 금액
     표시 단위(원 vs $)만 종목의 통화에 맞춰 분기함. 실현손익은 통화와 무관하게 항상 원화
-    (apply_transaction이 매수/매도 시점에 원화로 환산해서 저장하므로)."""
+    (apply_transaction이 매수/매도 시점에 원화로 환산해서 저장하므로).
+    "현재가" 선(2026-09-11 갱신, new1과 동일 취지 — 예전 두 점 직선이 "꾸준히 내려온 것처럼"
+    보인다는 지적): meritz엔 new1 같은 Supabase price_history가 없어서, 국내(KRW) 종목은
+    fetch_daily_price_history(네이버 일별시세 API, 종목당 호출 1번으로 구간 전체를 받음 — 낱개
+    조회 아님)로 최초매입일~오늘 실제 종가를 받아 그린다. USD(나스닥) 종목은 이 API가 국내
+    전용이라 지원 대상 밖 — 예전처럼 두 점 직선 폴백."""
     name = r["종목명"]
     is_usd = r.get("통화") == "USD"
     unit = "$" if is_usd else "원"
@@ -478,6 +483,30 @@ def _render_holding_detail(r: dict, tx: pd.DataFrame, T: dict):
     avg_x = list(avg_path["날짜"]) + [today]
     avg_y = list(avg_path["평단가"]) + [avg_price]
 
+    # "현재가" 선의 실제 데이터 — KRW 종목만 네이버 일별시세로 조회, 세션당 종목코드 1회만
+    # (카드 열어둔 채 다른 위젯 눌러 rerun돼도 재조회 안 함). USD 종목/조회 실패 시 빈 리스트.
+    code = r["종목코드"]
+    _hist_cache = st.session_state.setdefault("holding_price_hist_cache", {})
+    if code not in _hist_cache:
+        _hist_cache[code] = [] if is_usd else fetch_daily_price_history(code, entry_date, today)
+    _hist_rows = _hist_cache[code]
+    _ph = pd.DataFrame(_hist_rows)
+    if not _ph.empty:
+        _ph = _ph[(_ph["날짜"] >= entry_date) & (_ph["날짜"] <= today)]
+    if len(_ph) >= 2:
+        cur_x = list(_ph["날짜"])
+        cur_y = [float(v) for v in _ph["종가"]]
+        if cur_x[0] != entry_date:
+            cur_x, cur_y = [entry_date] + cur_x, [entry_price] + cur_y
+        else:
+            cur_y[0] = entry_price  # 실제 체결가로 첫 점 고정
+        if cur_x[-1] != today:
+            cur_x, cur_y = cur_x + [today], cur_y + [current_price]
+        else:
+            cur_y[-1] = current_price  # 실시간가로 마지막 점 고정
+    else:
+        cur_x, cur_y = [entry_date, today], [entry_price, current_price]
+
     # x축 눈금: 매수 1건이고 진입일이 오늘과 하루 이내면 plotly가 날짜축을 "하루 미만" 범위로
     # 보고 23:59:59.999 같은 시:분:초 눈금을 찍는다. dtick을 '며칠 단위'로 고정하고 범위를
     # 살짝 넓혀 날짜 눈금만 2~4개 나오게 함(new1 §물타기 그래프).
@@ -496,9 +525,8 @@ def _render_holding_detail(r: dict, tx: pd.DataFrame, T: dict):
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(
-        x=[entry_date, today], y=[entry_price, current_price], mode="lines+markers",
-        name="현재가", line=dict(color=T["muted"], width=2, dash="dot"),
-        marker=dict(size=6, color=T["muted"]),
+        x=cur_x, y=cur_y, mode="lines",
+        name="현재가", line=dict(color=T["muted"], width=1.8),
         hovertemplate=hover_price,
     ))
     fig.add_trace(go.Scatter(
