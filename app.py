@@ -754,6 +754,22 @@ with tab_port:
     _stk_c = UP_COLOR if (_stk_day or 0) > 0 else (DOWN_COLOR if (_stk_day or 0) < 0 else T["muted"])
     _tt_arrow = "▲" if day_change > 0 else ("▼" if day_change < 0 else "·")
 
+    # ---- "Orchestration 지수" — 8/14 종가를 앵커로 "내 주식"(Rs) 누적수익률을 지수 포인트로
+    # 환산(new1 포팅, 2026-09-15). 보유종목 평가손익 원/% 옆에 나란히, 지수는 크게·등락%는 작게.
+    _idx_anchor = float(_idx_h["KOSPI"].iloc[0]) if not _idx_h.empty else None
+    _stk_cum = (_iva_m.get("latest", {}).get("주식") or (None, None))[0]
+    _idx_orch_now = (_idx_anchor * (1 + _stk_cum)) if (_idx_anchor is not None and _stk_cum is not None) else None
+    idx_compare_html = ""
+    if _idx_orch_now is not None:
+        _orch_c = UP_COLOR if (_stk_day or 0) > 0 else (DOWN_COLOR if (_stk_day or 0) < 0 else T["muted"])
+        _orch_day_s = f"{'+' if (_stk_day or 0) >= 0 else ''}{(_stk_day or 0) * 100:.2f}%"
+        idx_compare_html = (
+            f'<span style="font-size:20px;font-weight:700;margin-left:14px;color:{_orch_c}">'
+            f'{_idx_orch_now:,.0f}</span>'
+            f'<span style="font-size:12px;font-weight:600;margin-left:4px;color:{_orch_c}">'
+            f'{_orch_day_s}</span>'
+        )
+
     color = UP_COLOR if stock_profit >= 0 else DOWN_COLOR
     sign = "+" if stock_profit >= 0 else ""
     daily_color = UP_COLOR if daily_pnl > 0 else (DOWN_COLOR if daily_pnl < 0 else T["muted"])
@@ -782,7 +798,7 @@ with tab_port:
         <div class="summary-label">보유종목 평가손익</div>
         <span class="summary-main" style="color:{color}">{sign}{stock_profit:,.0f}원</span>
         <span class="summary-sub" style="color:{color}">{sign}{stock_profit_pct:.2f}%</span>
-        <div class="summary-grid">
+        {idx_compare_html}<div class="summary-grid">
             <div>예수금<b>{state['cash']:,.0f}원</b></div>
             <div>총 매입<b>{total_cost:,.0f}원</b></div>
             <div>총 평가<b>{stock_valuation:,.0f}원</b></div>
