@@ -170,6 +170,10 @@ st.markdown(f"""
     .updown-row .name {{ font-weight:700; color:{T['text']}; flex:1; }}
     .updown-row .pct {{ font-weight:700; font-family: ui-monospace, monospace; width:62px; text-align:right; }}
     .updown-row .detail {{ font-size:11px; color:{T['muted']}; font-family: ui-monospace, monospace; width:118px; text-align:right; }}
+    /* Watering Detect: 모바일 좁은 화면에선 최초가/흡수율/시드 상세를 숨기고 마지막 매수 대비%만
+       보여줌(2026-09-16, new1 동일). */
+    .wd-extra {{ display:inline-flex; align-items:center; gap:8px; }}
+    @media (max-width:480px) {{ .wd-extra {{ display:none; }} }}
 
 
     .stock-card {{ background:{T['card']}; border:1px solid {T['border']}; border-radius:12px; padding:10px 16px; margin-bottom:7px; }}
@@ -1055,7 +1059,8 @@ with tab_port:
 
             rows_html = "".join(
                 f'<div class="updown-row"><span class="name">{r["종목명"]}</span>'
-                f'{_wd_span(r["pct_first_cur"])}{_wd_mid(r)}{_wd_span(r["pct_last"])}</div>'
+                f'<span class="wd-extra">{_wd_span(r["pct_first_cur"])}{_wd_mid(r)}</span>'
+                f'{_wd_span(r["pct_last"])}</div>'
                 for r in watering_rows
             )
             st.markdown(rows_html, unsafe_allow_html=True)
