@@ -3,6 +3,7 @@ __pycache__/
 todaytrans/
 nasdaqtrans/
 files/
+ui_cache/
 portfolio.csv
 portfolionasdaq.csv
 .streamlit/secrets.toml

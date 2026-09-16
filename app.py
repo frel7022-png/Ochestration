@@ -36,6 +36,7 @@ from portfolio_core import (
     load_fund_nav_history, compute_vip_vs_orchestra, compute_pnl_actions, load_both_accounts,
     write_account_snapshot, fetch_peer_account_snapshot, resolve_trading_date,
     load_claude_notes, fetch_daily_price_history,
+    compute_fa_win_rate, save_ui_cache_json, load_ui_cache_json,
 )
 
 UP_COLOR = "#d9364f"    # 국내 관례: 상승/이익 = 빨강
@@ -782,6 +783,22 @@ with tab_port:
     sell_total_amt = (pd.to_numeric(sell_tx["수량"], errors="coerce") * pd.to_numeric(sell_tx["단가"], errors="coerce")).sum()
     total_trade_count = len(today_tx)
 
+    # ---- FA 승률(new1 §6-30 포팅) — "물 안 타고 한 번에 끝났으면 좋았을 판단이었나".
+    # FA=1회 진입 1회 나온 것(승률), MA=물타서 나온 것, MO=나눠 팔아서 나온 것(MO_closed).
+    # 셋 다 괄호 안 %는 전체 사이클 수(total) 대비 비율. Total 줄 = 총아웃/총진입(open 포함).
+    _fa = compute_fa_win_rate(tx)
+    _fa_out_pct = (_fa["n_out"] / _fa["total"] * 100.0) if _fa["total"] else 0.0
+    _fa_ma_pct = (_fa["ma"] / _fa["total"] * 100.0) if _fa["total"] else 0.0
+    _fa_mo_pct = (_fa["mo_closed"] / _fa["total"] * 100.0) if _fa["total"] else 0.0
+    _fa_html = (
+        f'<div style="font-size:12px;color:{T["text"]};font-weight:600;margin-top:4px">'
+        f'Total {_fa["n_out"]}/{_fa["total"]} ({_fa_out_pct:.0f}%)</div>'
+        f'<div style="font-size:12px;color:{T["text"]};font-weight:600;margin-top:1px">'
+        f'FA {_fa["win"]}({_fa["win_rate"]:.0f}%) · MA {_fa["ma"]}({_fa_ma_pct:.0f}%) · '
+        f'MO {_fa["mo_closed"]}({_fa_mo_pct:.0f}%)</div>'
+        if _fa["total"] else ""
+    )
+
     daily_trade_html = f"""
     <div class="daily-trade-box">
         <div class="daily-trade-count">일일거래 총 {total_trade_count}회
@@ -790,7 +807,7 @@ with tab_port:
             <span style="color:{UP_COLOR}">매수</span> <b>{buy_total_amt:,.0f}원</b>
             &nbsp;&nbsp;·&nbsp;&nbsp;
             <span style="color:{DOWN_COLOR}">매도</span> <b>{sell_total_amt:,.0f}원</b></div>
-    </div>
+        {_fa_html}</div>
     """
 
     st.markdown(f"""
@@ -974,7 +991,16 @@ with tab_port:
                     })
             st.session_state["updown_results"] = results
             st.session_state["updown_checked_at"] = now_kst_str()
+            save_ui_cache_json("updown", {"results": results, "checked_at": st.session_state["updown_checked_at"]})
             st.rerun()
+
+        # 세션이 새로 열려 비어있으면(new1 §6-31) 로컬 캐시에서 마지막 새로고침 결과를 먼저
+        # 채운다 — 네트워크 조회 없이, 사용자가 다시 새로고침을 눌러야만 갱신된다.
+        if "updown_results" not in st.session_state:
+            _cached = load_ui_cache_json("updown")
+            if _cached:
+                st.session_state["updown_results"] = _cached.get("results")
+                st.session_state["updown_checked_at"] = _cached.get("checked_at")
 
         updown_results = st.session_state.get("updown_results")
         updown_checked_at = st.session_state.get("updown_checked_at")

@@ -361,3 +361,34 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   종목당 API 호출 1번으로 구간 전체)**로 실제 일별 종가를 그리고, **USD(나스닥) 종목은 이 API가
   국내 전용이라 지원 밖 — 두 점 직선 폴백** 그대로. 첫/끝 점은 실제 체결가·실시간가로 고정.
   세션당 종목코드 1회만 조회(`st.session_state["holding_price_hist_cache"]`).
+
+### 6-7. 2026-09-16 — 새로고침 캐시(§6-31)·FA 승률(§6-30)·섹터 미분류 정리 (new1 부분 이식)
+사용자: "메리츠에 모든 기능을 이식 시킬 필요는 없고" — new1의 최신 변경 중 이 세 가지만
+선택적으로 포팅. Fishing/Volume/Foreigner/Link류(관심종목 스크리너)는 여전히 미이식 상태
+그대로(§6-6 결과 문단 참고, meritz엔 Supabase watchlist 파이프라인 자체가 없음).
+- **새로고침 결과 로컬 캐시 (new1 §6-31)**: meritz엔 Up/Down 하나만 수동 새로고침 버튼으로
+  session_state가 채워지는 패널이라(다른 새로고침류는 전부 세션당 1회 자동 실행,
+  `auto_refreshed` 패턴) 이식 범위도 Up/Down 하나로 충분함. `portfolio_core.py`에
+  `save_ui_cache_json`/`load_ui_cache_json` + `UI_CACHE_DIR = HERE / "ui_cache"`(`.gitignore`)
+  포팅 — DataFrame용(`save_ui_cache_df`/`load_ui_cache_df`)은 meritz에 캐싱 대상 DataFrame이
+  없어서 이식 안 함. `app.py`의 Up/Down 새로고침 버튼 핸들러에서 저장, 세션이 새로 열려
+  `updown_results`가 없으면 렌더 직전에 로컬 캐시부터 채움.
+- **FA 승률 (new1 §6-30)**: `_all_cycles()`에 `first_buy_date`/`close_date` 필드 추가(원래
+  meritz의 `_all_cycles`엔 §6-6에서 포팅해온 P&L Actions용 필드만 있었음) + `compute_fa_win_rate(tx)`
+  신설(new1과 완전히 동일한 정의·반환값). `app.py` daily-trade-box(일일거래 총 ~회) 맨 밑에
+  `Total N/M(%)` + `FA N(%) · MA N(%) · MO N(%)` 두 줄 — new1과 동일 포맷(2026-09-16 당일
+  new1에서 MA/MO에도 % 추가된 최종형까지 한 번에 이식). 평균 보유일수는 new1과 마찬가지로
+  화면엔 표시 안 함(함수 반환값엔 `avg_days` 남아있음).
+- **섹터 "미분류" 12종목 정리**: `portfolio_data.csv`에 남아있던 미분류 12종목(씨앤씨인터내셔널·
+  대신증권·풀무원·앱클론·바텍·씨티케이·파라다이스·카페24·인바디·파마리서치·엘앤씨바이오·
+  OCI홀딩스) 전부 **new1의 `stock_sector_cache.csv`(§6-24, 27개 수정섹터+기타2 체계)에서
+  이미 값이 있는 걸 확인**하고 그대로 가져와 채움 — meritz 자체의 27개 카테고시 전면 개편(§6-24)은
+  **안 함**(요청 범위 밖, meritz는 여전히 구 세분류 섹터 체계 그대로). 즉 이 12종목만
+  "기타2"(new1의 153개 밖 분류)나 27개 카테고리 값(화장품·의류·바이오 등)을 갖게 돼서
+  **meritz 안에 신구 섹터 체계가 일부 섞여 있음** — 의도된 상태(§6-3에 이미 적혀있던
+  "미분류 종목은 new1 캐시에서 찾아본다"는 절차를 그대로 실행한 것). `update_sector_cache()`로
+  `stock_sector_cache.csv`에도 반영해둬서, 이 12종목이 전량매도 후 재진입해도 자동으로
+  같은 섹터가 다시 배정됨. **주의**: meritz의 `apply_transaction`은 신규 보유 종목 생성
+  시점에만 캐시에서 섹터를 읽어오고(§6-3), 이미 "미분류"로 박제된 기존 행은 캐시를 갱신해도
+  자동으로 안 고쳐진다 — 그래서 `portfolio_data.csv`의 섹터 셀도 직접 같이 패치함(new1
+  `fix_sector.py`와 같은 원칙, meritz엔 전용 스크립트가 없어 이번엔 인라인으로 처리).

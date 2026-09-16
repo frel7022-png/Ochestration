@@ -17,6 +17,7 @@ app.py(웹 화면)와 ingest_daily.py(일일 매매일지 반영 스크립트)�
 
 import ast
 import io
+import json
 import uuid
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -38,6 +39,8 @@ SECTOR_CACHE_FILE = HERE / "stock_sector_cache.csv"
 INDEX_HISTORY_FILE = HERE / "index_history.csv"          # 날짜별 코스피/코스닥 종가 (지수 대비 계좌, new1 §6-17 포팅)
 DOM_ASSET_HISTORY_FILE = HERE / "dom_asset_history.csv"  # 날짜별 "국내주식 평가금액"(레드와이어/USD 제외)
 MARKET_CACHE_FILE = HERE / "stock_market_cache.csv"      # 종목명→KOSPI/KOSDAQ 영구 캐시(혼합지수 가중치용)
+UI_CACHE_DIR = HERE / "ui_cache"  # Up/Down 새로고침 결과의 세션-간 로컬 캐시(new1 §6-31 포팅) —
+                                  # git엔 안 올림(.gitignore), 세션 리셋돼도 마지막 새로고침 값 유지용.
 
 HOLD_COLUMNS = ["종목명", "종목코드", "섹터", "수량", "평단가", "현재가", "등락률", "업데이트시각",
                 "통화", "매입금액KRW"]
@@ -1518,6 +1521,7 @@ def compute_vip_vs_orchestra(iva: dict, both_accounts: pd.DataFrame | None = Non
 def _all_cycles(tx: pd.DataFrame) -> list[dict]:
     """모든 종목의 모든 사이클(진입 ~ 전량청산, 청산 안 됐으면 open)을 리스트로.
     사이클 dict: 종목, n_buy, n_sell, n_partial, first_buy_qty, first_buy_px,
+    first_buy_date(FA 승률용, new1 §6-30 포팅), close_date(전량청산된 날짜, 위와 동일 목적),
     buy_amt(Σ매수 수량×단가), sell_amt(Σ매도 수량×단가), realized(Σ실현손익), closed."""
     if tx is None or tx.empty:
         return []
@@ -1538,10 +1542,12 @@ def _all_cycles(tx: pd.DataFrame) -> list[dict]:
             if cur is None:
                 cur = {"종목": name, "n_buy": 0, "n_sell": 0, "n_partial": 0,
                        "first_buy_qty": 0.0, "first_buy_px": 0.0,
+                       "first_buy_date": None, "close_date": None,
                        "buy_amt": 0.0, "sell_amt": 0.0, "realized": 0.0, "closed": False}
             if r["구분"] == "매수":
                 if cur["n_buy"] == 0:
                     cur["first_buy_qty"], cur["first_buy_px"] = float(r["수량"]), float(r["단가"])
+                    cur["first_buy_date"] = r["날짜"]
                 cur["n_buy"] += 1
                 cur["buy_amt"] += r["수량"] * r["단가"]
                 qty += r["수량"]
@@ -1552,6 +1558,7 @@ def _all_cycles(tx: pd.DataFrame) -> list[dict]:
                 qty -= r["수량"]
                 if qty <= 1e-9:
                     cur["closed"] = True
+                    cur["close_date"] = r["날짜"]
                     out.append(cur)
                     cur, qty = None, 0.0
                 else:
@@ -1652,6 +1659,39 @@ def compute_pnl_actions(tx: pd.DataFrame, holdings: pd.DataFrame) -> dict:
     }
 
     return {"total": total, "baskets": baskets, "status": status, "watering": watering_detail}
+
+
+def compute_fa_win_rate(tx: pd.DataFrame) -> dict:
+    """"물 안 타고 한 번에 끝났으면 좋았을 판단이었나" 승률(new1 §6-30 포팅). 한 번 사서
+    한 번에 전량청산(FA)한 사이클만 성공, 물탔든(MA)·나눠 팔았든(MO)·아직 보유 중이든(HOLD)
+    전부 실패로 센다 — 손익이 아니라 "최초 판단의 정확도"를 재는 지표.
+    반환: win(FA 수)·total(전체 사이클 수, open 포함)·n_out(전량청산 완료 수)·ma·mo_closed
+    (나눠팔아서 전량청산된 수)·win_rate(=win/total%)·avg_days(FA 평균 보유일수).
+    검산: win+ma+mo_closed == n_out."""
+    empty = {"win": 0, "total": 0, "n_out": 0, "ma": 0, "mo_closed": 0,
+             "win_rate": 0.0, "avg_days": None}
+    cycles = _all_cycles(tx)
+    if not cycles:
+        return empty
+    for c in cycles:
+        c["bucket"] = _cycle_bucket(c)
+    fa = [c for c in cycles if c["bucket"] == "FA"]
+    ma = [c for c in cycles if c["bucket"] == "MA"]
+    mo_closed = [c for c in cycles if c["bucket"] == "MO" and c["closed"]]
+    n_out = sum(1 for c in cycles if c["closed"])
+    total = len(cycles)
+    win = len(fa)
+    days = []
+    for c in fa:
+        if c.get("first_buy_date") and c.get("close_date"):
+            try:
+                d = (pd.Timestamp(c["close_date"]) - pd.Timestamp(c["first_buy_date"])).days
+                days.append(max(d, 0))
+            except (ValueError, TypeError):
+                pass
+    avg_days = (sum(days) / len(days)) if days else None
+    return {"win": win, "total": total, "n_out": n_out, "ma": len(ma), "mo_closed": len(mo_closed),
+            "win_rate": (win / total * 100.0) if total else 0.0, "avg_days": avg_days}
 
 
 # ------------------------------------------------------------------ #
@@ -1763,3 +1803,28 @@ def parse_execution_log_csv(raw: bytes, stock_name: str) -> pd.DataFrame:
     out = out[out["구분"].isin(["매수", "매도"])]
     out = out[out["수량"].notna() & out["단가"].notna() & (out["수량"] > 0) & (out["단가"] > 0)]
     return out.reset_index(drop=True)
+
+
+# ---- UI 새로고침 결과 로컬 캐시 (new1 §6-31 포팅) ----
+# Up/Down은 수동 "새로고침" 버튼으로만 session_state가 채워지는데, 브라우저 세션이 새로
+# 열릴 때마다(탭 새로고침·재접속 등) 통째로 리셋된다. 새로고침 시 결과를 로컬 파일에도
+# 같이 저장해두고, 세션이 새로 시작됐을 때 session_state에 값이 없으면 네트워크 조회
+# 없이 이 파일에서 먼저 채운다 — 새 요청은 여전히 사용자가 버튼을 눌러야만 나간다.
+def save_ui_cache_json(name: str, obj) -> None:
+    try:
+        UI_CACHE_DIR.mkdir(exist_ok=True)
+        with open(UI_CACHE_DIR / f"{name}.json", "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+    except OSError:
+        pass
+
+
+def load_ui_cache_json(name: str):
+    path = UI_CACHE_DIR / f"{name}.json"
+    if not path.exists():
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
