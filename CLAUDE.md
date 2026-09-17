@@ -413,9 +413,42 @@ new1과 거의 같은 모양으로 운영하기로 확정함 — 새 세션은 n
   들어감), **meritz에 compute_metrics_at_close/resolve_trading_date를 포팅하는 건 여전히
   별개의 남은 과제**(§6-4에 이미 있던 "meritz는 아직 resolve_trading_date 없음" 메모와 같은
   갈래) — 이번 수정은 "멀티데이 staleness"만 없앤 것이지 "장중 반영 시 스냅샷 오염" 문제
-  전체를 해결한 건 아니다.
+  전체를 해결한 건 아니다. **→ 바로 다음(§6-9)에서 이 남은 과제도 포팅함.**
 - **수정 직후 조치**: 세션이 직접 `refresh_all_prices()`를 한 번 더 돌려 오늘자 라이브
   가격으로 `portfolio_data.csv`를 갱신·커밋(43종목 갱신, 실패 없음) — 다음 ingest부터는
   자동으로 이 스텝을 타므로 재발 안 함.
+
+### 6-9. compute_metrics_at_close 포팅 — 스냅샷도 확정 종가 기준으로 (2026-09-17, new1 §6-2 5번째 재발 포팅)
+- **동기**: §6-8을 고치고도 "메리츠 어제보다 2~3만원 올랐는데 여전히 -5,990원으로 나온다"는
+  지적이 이어짐 — §6-8은 "표시용 현재가/스냅샷 계산에 쓰는 현재가"가 매일 안 갱신되는
+  문제만 없앴을 뿐, **스냅샷 자체가 확정 종가가 아니라 그 순간의 라이브가를 쓴다는 더 근본
+  문제**는 그대로 남아있었다. 실측으로 확인: 9/16 `dom_asset_history` 값(5,080,500원)이
+  실제로는 9/16 당일 확정 종가가 아니라 그 전날(9/15) 무렵 가격 그대로 찍혀있었음 —
+  confirmed close로 다시 계산하니 **5,049,095원**이 나왔고(−31,405원 차이), 이 stale
+  베이스라인 때문에 "오늘 대비"가 계속 잘못된 부호로 나왔다(실측: 틀린 베이스라인으로
+  day_change = −3,415원, 정정된 베이스라인으로 day_change = **+27,990원** — 사용자가
+  체감한 "2~3만원 올랐다"와 정확히 일치).
+- **수정**: new1의 `compute_metrics_at_close(df, cash, trade_date)`(§6-2 5번째 재발)를
+  meritz에 포팅 — `portfolio_core.compute_metrics_at_close(df, cash, trade_date,
+  fx_rate=1.0)`. 종목코드별로 `fetch_daily_price_history`(KRX 전용)로 그 trade_date의
+  확정 종가를 조회해 평가하고, 없으면(당일 장중 반영 등) 실시간 시세로, 그마저 없으면
+  기존 현재가로 폴백한다. **레드와이어(RDW) 등 통화="USD" 종목은 이 함수가 확정 종가를
+  못 구해와 기존 현재가 그대로 쓰는데, `dom_asset_history`(§6-4)가 애초에 USD 종목을
+  제외하므로 이 함수의 목적(국내 스냅샷 정확도)엔 영향 없다.** `ingest_daily.py`가
+  `compute_metrics(holdings2, cash, fx_rate)`로 스냅샷용 `df`/`stock_val`/`total_assets`를
+  계산하던 걸 `compute_metrics_at_close(holdings2, cash, trade_date, fx_rate)`로 교체 —
+  이 값들은 `snapshot_history`/`snapshot_sector_history`/`snapshot_dom_asset_history`뿐
+  아니라 반영 후 콘솔 요약 출력에도 그대로 쓰여 new1과 동일한 패턴.
+- **기존 오염된 9/16 값도 정정**: 9/16 이후 거래가 없어(현재 보유 구성 = 9/16 당시 구성과
+  동일) 현재 holdings로 confirmed-close 재계산이 안전했음 — `snapshot_dom_asset_history
+  (5049095.0, "2026-09-16")`로 그 자리에서 덮어씀. **주의**: 이 방식(현재 holdings로
+  과거 날짜를 재계산)은 그 날짜 이후 거래가 없었을 때만 안전 — 거래가 있었다면 그 날짜
+  시점의 holdings 구성 자체가 지금과 달라서 이 방법을 쓸 수 없다(체크포인트나 재생이
+  필요해짐, meritz는 체크포인트 자체가 없음 — new1과 다른 점).
+- **여전히 남은 차이(수용)**: new1은 `resolve_trading_date()`로 장 시작 전/주말 새로고침이면
+  직전 거래일로 자동 보정하는데, meritz는 아직 이 함수 자체가 없다(§6-4에 이미 있던 메모) —
+  `compute_metrics_at_close`는 trade_date를 받은 그대로 신뢰하므로, ingest를 실행하는 날짜
+  인자가 정확해야 한다(지금까지 실제로 문제 된 적은 없음, 매매일지 반영일을 사람이 직접
+  넘기므로).
 - **new1 쪽 원본**: new1 `claude.md` §6-2 "6번째 재발" 참고, GS리테일 실측 사례(등락률
   -5.79% stale → 실제 -0.21%)로 처음 발견됨.
