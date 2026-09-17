@@ -644,6 +644,57 @@ def compute_metrics(df: pd.DataFrame, cash: float, fx_rate: float = 1.0):
     return df, stock_valuation, total_assets, unrealized_loss
 
 
+def compute_metrics_at_close(df: pd.DataFrame, cash: float, trade_date: str, fx_rate: float = 1.0):
+    """compute_metrics의 "확정 종가" 버전 — asset_history/dom_asset_history/sector_history
+    스냅샷 전용 (new1 §6-2 5번째 재발 포팅, 2026-09-17).
+
+    ingest_daily.py는 매매일지를 하루 중 아무 때나(장중 포함) 반영할 수 있는데, 그 시점에
+    portfolio_data.csv에 남아있는 현재가는 마지막으로 새로고침된 시각의 값(장중 한 시점)일
+    뿐 그 날짜의 실제 마감가가 아니다 — 그래서 스냅샷에 찍히는 "그날 총자산"이 장중 스냅이
+    되어버리고, 다음날 라이브 시세와 비교하는 "어제 대비"(app.py의 day_change)가 왜곡된다
+    (new1에서 2026-09-14 실제로 겪음: 낮 12:36 새로고침 시점으로 찍혀서 그날 오후 장중
+    변동분이 다음 영업일의 "어제 대비"에 잘못 얹힘). §6-8(2026-09-17, ingest가 매번 라이브
+    새로고침을 하도록 바꾼 수정)은 "며칠씩 묵는 stale"만 없앴을 뿐, 이 "장중 반영 시 스냅샷
+    오염" 문제는 그대로 남아있어서 이번에 따로 포팅함.
+
+    trade_date의 확정 종가(fetch_daily_price_history, KRX 종목만 지원)를 종목코드별로
+    조회해 그 값으로 평가하고, 아직 확정 종가가 없으면(당일 장중 반영 등) 실시간 시세로,
+    그마저 안 되면 df에 이미 있던 현재가로 대체한다. **레드와이어(RDW) 같은 통화="USD"
+    종목은 이 함수가 확정 종가를 못 구해오므로(네이버 API가 KRX 전용) 그대로 기존 현재가를
+    쓴다** — 어차피 dom_asset_history(§6-4, 국내 전용)는 USD 종목을 애초에 제외하므로 이
+    함수의 목적(국내 스냅샷 정확도)엔 영향 없다. **portfolio_data.csv에 저장되는 표시용
+    현재가는 건드리지 않는다** — 반환된 df는 스냅샷 계산에만 쓰고 save_holdings()에 넘기지
+    말 것."""
+    codes = [clean_str(c) for c in df["종목코드"].tolist()]
+    codes = [c for c in codes if c and c.lower() != "nan"]
+
+    close_map: dict[str, float] = {}
+    for code in dict.fromkeys(codes):
+        try:
+            for row in fetch_daily_price_history(code, trade_date, trade_date) or []:
+                if row.get("날짜") == trade_date and row.get("종가"):
+                    close_map[code] = float(row["종가"])
+        except Exception:
+            pass
+
+    missing = [c for c in dict.fromkeys(codes) if c not in close_map]
+    if missing:
+        try:
+            live_quotes, _ = fetch_quotes(missing)
+        except Exception:
+            live_quotes = {}
+        for c, q in live_quotes.items():
+            close_map[c] = q["price"]
+
+    snap = df.copy()
+    for i, row in snap.iterrows():
+        code = clean_str(row.get("종목코드", ""))
+        if code in close_map:
+            snap.loc[i, "현재가"] = close_map[code]
+
+    return compute_metrics(snap, cash, fx_rate)
+
+
 def compute_sector_weights(df: pd.DataFrame) -> dict:
     """섹터그룹별 비중(%). 주식 평가금액 총합 대비이며 예수금은 포함하지 않음."""
     if df.empty:

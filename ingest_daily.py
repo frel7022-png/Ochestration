@@ -107,7 +107,13 @@ def main():
     core.save_state(state2)
 
     fx_rate = core.fetch_fx_rate() or 1.0
-    df, stock_val, total_assets, unrealized_loss = core.compute_metrics(holdings2, state2["cash"], fx_rate)
+    # 확정 종가 기준(compute_metrics_at_close, new1 §6-2 5번째 재발 포팅, 2026-09-17) —
+    # 반영 시점이 장중이어도 asset_history/dom_asset_history/sector_history 스냅샷이 항상
+    # 그 날짜의 실제 마감 기준이 되게 한다. RDW(USD) 등 확정 종가를 못 구하는 종목은
+    # 함수 내부에서 기존 현재가로 자동 폴백 — dom_asset_history는 어차피 USD 종목을
+    # 제외하므로 영향 없음.
+    df, stock_val, total_assets, unrealized_loss = core.compute_metrics_at_close(
+        holdings2, state2["cash"], trade_date, fx_rate)
     core.snapshot_history(total_assets, total_assets + unrealized_loss, on_date=trade_date)
     core.snapshot_sector_history(core.compute_sector_weights(df), on_date=trade_date)
 
