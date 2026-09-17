@@ -1196,6 +1196,27 @@ def fetch_daily_price_history(code: str, start_date: str, end_date: str) -> list
     return result
 
 
+def confirmed_close_or_live(code: str, trade_date: str, fallback: float | None) -> float | None:
+    """trade_date의 확정 종가를 우선 쓰고, 없으면(당일 장중 반영 등) fallback(보통 실시간
+    시세)으로 폴백 — index_history/bigcap_history 스냅샷 오염 방지(new1 §6-2 4번째 재발
+    포팅, 2026-09-17). **new1과 완전히 동일한 함수** — 원래 `ingest_daily.py`가 각자
+    `_close_on` 로컬 클로저로 복제해서 갖고 있었는데("같은 로직인데 왜 파일이 둘이냐"는
+    사용자 지적, 2026-09-17), 실제로 그 복제 때문에 이 레포의 index_history[9/16]이
+    확정 종가(6,717.97)와 65p 어긋난 장중 스냅(6,653.21)으로 방치돼 그 이후 "당일" 등락률이
+    전부 왜곡되는 사고가 터졌다(bigcap_history[9/14~9/16]도 양쪽 레포 모두 몇천~몇만 원씩
+    어긋나 있었음 — 실제로 SK하이닉스는 9/16에 33,000원 차이, SamHynix extracted가
+    (1−W)≈0.48로 나눠 증폭하는 구조라 이 오차가 크게 부풀려짐). new1의 `_close_on`과
+    로직이 100% 같아야 하므로, 이 함수를 고칠 땐 반드시 new1 `portfolio_core.
+    confirmed_close_or_live`도 같이 고칠 것."""
+    try:
+        for row in fetch_daily_price_history(code, trade_date, trade_date) or []:
+            if row.get("날짜") == trade_date and row.get("종가"):
+                return float(row["종가"])
+    except Exception:
+        pass
+    return fallback
+
+
 def _sort_tx_meritz(tx: pd.DataFrame) -> pd.DataFrame:
     t = tx.copy().reset_index(drop=True)
     t["_ord"] = range(len(t))
