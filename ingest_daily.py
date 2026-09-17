@@ -85,6 +85,23 @@ def main():
             core.save_holdings(holdings2)
             print("[코드보충] " + ", ".join(f"{n}={c}" for n, c in resolved.items()))
 
+    # ---- 라이브 시세 새로고침, 매일 무조건 (new1 §6-2 6번째 재발과 동일한 이유, 2026-09-17) ----
+    # 예전엔 "코드 미확인 종목이 있을 때만" 세션이 수동으로 refresh_all_prices를 돌렸는데,
+    # 코드가 이미 다 있는 평범한 날엔 이 스텝이 통째로 스킵돼서 portfolio_data.csv에 커밋되는
+    # 현재가/등락률이 며칠씩 그대로 멈춰있었다(실제로 겪음: 대부분 종목이 9/15 17:22 시점
+    # 값으로 이틀 넘게 멈춰있었음). 그러면 이 날 이후의 dom_asset_history 스냅샷들도 전부
+    # 그 stale 가격으로 계산돼, "어제 대비" 비교(app.py의 day_change)가 실제 시장 움직임과
+    # 어긋난 값을 보여줬다. new1엔 확정 종가 기반 compute_metrics_at_close가 있어 스냅샷
+    # 자체는 안전하지만(§6-2 5번째 재발), meritz는 아직 그 장치가 없어 스냅샷도 이 stale
+    # 가격을 그대로 쓴다 — 그래서 여기서는 스냅샷 계산(아래 compute_metrics) 전에 새로고침해,
+    # 최소한 "며칠 전 가격"이 아니라 "지금 라이브 가격"으로는 찍히게 한다(완벽한 확정종가
+    # 방식은 아직 아니지만 최소한 멀티데이 staleness는 없어짐).
+    holdings2, _price_report = core.refresh_all_prices(holdings2)
+    if _price_report["unresolved"]:
+        print("[경고] 시세를 못 찾은 종목: " + ", ".join(_price_report["unresolved"]))
+    if _price_report["failed"]:
+        print("[경고] 시세 조회 실패 종목: " + ", ".join(_price_report["failed"]))
+
     core.save_transactions(tx2)
     core.save_holdings(holdings2)
     core.save_state(state2)
