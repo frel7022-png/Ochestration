@@ -15,7 +15,9 @@
 2026-11-27(new1 9시 보고 B 6번 칸 (나) · 대표 부재 위임 11-27 17:02:59): dom_asset_history를 asset_history 날짜만이
 아니라 **마지막 반영일(asset_history 끝 날짜)까지의 모든 거래일(index 날짜)**로 만든다 — 매매일지를 몰아 넣어도 매매 없던
 날이 비지 않게. 그 날의 값 = 그날까지 거래로 재생한 보유 × 그날 종가(new1 daily_close 꼴). 마지막 반영일 뒤는 안 만든다
-(그 뒤 보유를 모르니 — 매매일지가 들어온 날 다시 돌린다). 지난 종가 출처는 실행 끝에 찍는다.
+(그 뒤 보유를 모르니 — 매매일지가 들어온 날 다시 돌린다). 지난 종가 출처는 실행 끝에 찍는다 — 09-14 뒤 네이버 일별(siseJson)
+종가는 NXT 합친 값(09-11까지 KRX)이라 메운 날 값에 애프터장이 섞인다.
+실제로 돌리면 index_history는 오늘까지 · asset · dom은 매매일지 끝 날까지라 check_history_alignment가 "뒤처짐"을 찍는다 — 이 걸음의 정상 꼴.
 그래서 dom_asset_history 한 파일 안에 두 셈이 섞인다 — 있던 날 = ingest 그날 스냅숏(당시 시세) · 메운 날 = 재생 보유 × 일별 종가.
 있던 날을 다시 계산하지 않는 건 지난 값 그대로(new1 원-2026-10-22-12 결 · new1 9시 보고 B 4번 칸)와 같은 쪽이다.
 """
@@ -120,8 +122,8 @@ def main():
     print(f"[{'dry' if dry else '완료'}] dom_asset_history.csv 있던 {len(have)}일 그대로 · 빈 거래일 {len(filled)}일 메움"
           + (f"({filled[0]}~{filled[-1]})" if filled else "") + f" — 끝 날짜 {dom_dates[-1] if dom_dates else '-'}(asset_history 마지막)")
     if filled:
-        print("[출처] 메운 날 값 = 그날까지 거래로 재생한 보유 × 네이버 일별시세 종가(fetch_daily_price_history) — "
-              "09-14 ~ 10-22 구간 일별 종가엔 애프터장(NXT) 값이 섞였을 수 있음(new1 쪽 기록 기준 · meritz 쪽은 안 잼). "
+        print("[출처] 메운 날 값 = 그날까지 거래로 재생한 보유 × 네이버 일별시세 종가(fetch_daily_price_history · siseJson) — "
+              "09-14 뒤 네이버 일별 종가는 NXT 합친 값(09-11까지 KRX · KRX 15:30 종가 아님 · new1 꺼내는_창구 44) — 메운 날 값에 애프터장이 섞임. "
               f"한 파일에 두 셈이 섞인다 — 있던 {len(have)}줄 = ingest 그날 스냅숏 그대로 · 메운 {len(filled)}줄 = 재생 × 일별 종가. "
               "메운 날 ↔ 다음 있던 날 사이 하루 등락에 두 셈의 차이(2% 안팎)가 낄 수 있다. 보고 · 커밋 메시지에 이 줄을 밝힌다.")
     if missing_code:
