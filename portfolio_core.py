@@ -1055,6 +1055,11 @@ def fetch_bigcap_quotes() -> dict:
     return out
 
 
+# 이 날짜(포함)부터 세 종목 비중 = 전일 비중 — new1 portfolio_core.EX_PREV_WEIGHT_FROM(@뇌 ex_비중_시점)과 같은 날 · 같은 식(두 레포 짝).
+# 그 앞 날짜는 그날 종가 비중 그대로(지난 값 안 바꿈). 2026-11-27 대표 부재 위임(17:02:59) — new1 9시 보고 B 3번 칸 "meritz도 같은 날".
+EX_PREV_WEIGHT_FROM: str | None = "2026-11-30"
+
+
 def synthetic_kospi_ex_bigcap(index_hist: pd.DataFrame, bigcap_hist: pd.DataFrame) -> pd.DataFrame:
     """index_hist의 KOSPI 열을 '삼성전자·삼성전자우·SK하이닉스를 덜어낸 코스피' 합성 레벨로
     바꾼 사본. compute_index_vs_account에 그대로 넘기면 코스피 다리·혼합지수·RP가 전부
@@ -1091,10 +1096,12 @@ def synthetic_kospi_ex_bigcap(index_hist: pd.DataFrame, bigcap_hist: pd.DataFram
         # (new1 §6-19, 2026-09-08 -10%까지 튐).
         if (cur and prev and kospi[i]
                 and all(cur.get(n) for n in names) and all(prev.get(n) for n in names)):
-            total_t = total0 * (kospi[i] / k0_lvl)
+            # 비중 시점: EX_PREV_WEIGHT_FROM 이후 날은 전일 비중(KOSPI(t−1) = KOSPI(t)/(1+r_k)) — new1 _ex_kospi_day와 같은 식
+            use_prev = EX_PREV_WEIGHT_FROM is not None and str(dates[i]) >= EX_PREV_WEIGHT_FROM
+            total_t = total0 * ((kospi[i] / (1.0 + r_k)) if use_prev else kospi[i]) / k0_lvl
             w_sum, wr_sum = 0.0, 0.0
             for n in names:
-                wi = _BIGCAP_SHARES[n] * cur[n] / total_t
+                wi = _BIGCAP_SHARES[n] * (prev[n] if use_prev else cur[n]) / total_t
                 ri = cur[n] / prev[n] - 1.0
                 w_sum += wi
                 wr_sum += wi * ri
